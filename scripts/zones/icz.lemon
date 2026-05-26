@@ -1,0 +1,76 @@
+
+//-------------------------------------------------------//
+// ICZ: IceCap Zone                                      //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// ICZ1: Knuckles' transporter start
+//=============================================================
+// When arriving from Knuckles' CNZ2 path (level.start_location == 2),
+// spawn the ICZ1 transporter and bypass the snowboard intro.
+
+//# address-hook(0x053608) end(0x05365e)
+function void InitLevelTiles.ICZ1()
+{
+	if (checkpoint.number == 0 && level.start_location == 2)
+	{
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x053ad4
+			u16[0xffffb010] = 0x3640
+			u16[0xffffb014] = 0x0660
+			camera.foreground.x.u16 = 0x35a0
+			camera.position.x.u16 = 0x35a0
+			camera.foreground.y.u16 = 0x05fb
+			camera.position.y.u16 = 0x05fb
+		}
+	}
+
+	level.height.bitmask = 0x07ff
+	level.height.tilemask = 0x07f0
+	level.chunksize.bitmask = 0x3c
+	Level.GetCameraPosition()
+	Level.InitialTilesFill()
+}
+
+// Scrolling setup: Knuckles' path skips the snowboard avalanche
+//# address-hook(0x05372c)
+//# address-hook(0x053744)
+function void fn053744()
+{
+	if (useSonicTailsAndKnuckles && level.start_location == 2)
+	{
+		if (u16[0xffffeec6] != 0)
+		{
+			u16[0xffffeec6] = 0
+			level.scrolling_routine += 4
+		}
+		fn053780()
+		return
+	}
+	base.fn053744()
+}
+
+//# address-hook(0x053730)
+//# address-hook(0x0537a8)
+function void fn0537a8()
+{
+	if (useSonicTailsAndKnuckles && level.start_location == 2)
+	{
+		if (u16[0xffffeec6] == 0)
+		{
+			fn053780()
+		}
+		else
+		{
+			u16[0xffffeec6] = 0
+			u16[0xffffeec8] = 0x02e0
+			u16[0xffffeeca] = 0x0f
+			level.scrolling_routine += 4
+			fn0537da()
+		}
+		return
+	}
+	base.fn0537a8()
+}

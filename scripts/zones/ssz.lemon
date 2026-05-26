@@ -1,0 +1,261 @@
+
+//-------------------------------------------------------//
+// SSZ: Sky Sanctuary Zone                               //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// SSZ1: Hide P3 during NPC Knuckles bridge cutscene
+//=============================================================
+
+global bool ssz1_knuckles_cutscene_active
+
+//# address-hook(0x06594a)
+function void fn06594a()
+{
+	if (useSonicTailsAndKnuckles && ssz1_knuckles_cutscene_active)
+	{
+		fn065fde()
+		Object.AnimationProgressByLocalA1.DistinctTimer()
+
+		// Wait for player to approach NPC Knuckles
+		s16 dx = s16(u16[0xffffb000 + 0x10]) - s16(objA0.position.x.u16)
+		if (dx < -0x60)
+			return
+
+		// Player is close — NPC Knuckles jumps off the bridge
+		u16 npcX = objA0.position.x.u16
+		u16 npcY = objA0.position.y.u16
+
+		// Restore palette and clean up
+		copyMemory(0xfffffc20, 0xfffffca0, 0x20)
+		addPatternLoadingCue(0x083d48)
+
+		checkpoint.number = 1
+		checkpoint.x = 0x0140
+		checkpoint.y = 0x0c6c
+		Checkpoint.SaveCurrentState()
+
+		// Place P3 at NPC's position and re-enable
+		ssz1_knuckles_cutscene_active = false
+		u16[P3_ADDR + 0x10] = npcX
+		u16[P3_ADDR + 0x14] = npcY
+		u8[P3_ADDR + 0x04] |= render_flag.VISIBLE
+		u8[P3_ADDR + 0x2e] = 0
+		u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+		u16[P3_ADDR + 0x18] = 0x0200
+		s16[P3_ADDR + 0x1a] = -0x400
+		u8[P3_ADDR + 0x20] = char.state.ROLLING
+
+		fn0851e4()
+		Object.TriggerUnloading()
+		return
+	}
+	base.fn06594a()
+}
+
+
+
+//-------------------------------------------------------//
+// SSZ Mid-Boss 2: Player position targeting             //
+//-------------------------------------------------------//
+// fn07a800 checks P1 x-position to decide initial
+// horizontal movement direction.
+// Type: PROXIMITY - picks direction based on player pos.
+
+//# address-hook(0x07a800)
+function void fn07a800()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn07a800()
+		return
+	}
+
+	fn07b12e()
+
+	objA0.position.y.u16 = u16[0xfffffaf4]
+	if (u16[0xfffffaf4] >= 0x0420)
+	{
+		objA0.value26 += 2
+		s16[0xfffffafa] = 0
+
+		// Find closest player x-position among P1, P2, P3
+		u16 closest_x = u16[0xffffb000 + 0x10]
+		u16 closest_dist = abs(s16(u16[0xfffffaf0] - closest_x))
+
+		u32 p2 = 0xffffb04a
+		if (u32[p2] != 0 && u8[p2 + 0x05] < base_state.DIED)
+		{
+			u16 d2 = abs(s16(u16[0xfffffaf0] - u16[p2 + 0x10]))
+			if (d2 < closest_dist)
+			{
+				closest_x = u16[p2 + 0x10]
+				closest_dist = d2
+			}
+		}
+
+		u32 p3 = P3_ADDR
+		if (u32[p3] != 0 && u8[p3 + 0x05] < base_state.DIED)
+		{
+			u16 d3 = abs(s16(u16[0xfffffaf0] - u16[p3 + 0x10]))
+			if (d3 < closest_dist)
+			{
+				closest_x = u16[p3 + 0x10]
+			}
+		}
+
+		D0.u16 = closest_x
+		if (D0.u16 >= u16[0xfffffaf0])
+		{
+			s16[0xfffffaf8] = SSZ_MidBoss2.getHorizontalMovementSpeed()
+			objA0.flags2e |= 0x80
+			objA0.render_flags |= render_flag.FLIP_X
+		}
+		else
+		{
+			s16[0xfffffaf8] = -SSZ_MidBoss2.getHorizontalMovementSpeed()
+			objA0.flags2e &= ~0x80
+			objA0.render_flags &= ~render_flag.FLIP_X
+		}
+	}
+
+	fn07ac06()
+	AddAsDynamicObject()
+	DrawObject()
+}
+
+
+//-------------------------------------------------------//
+// SSZ Mid-Boss 2: Decoy facing direction                //
+//-------------------------------------------------------//
+// fn07b0a8 checks P1 x-position to decide which way
+// the decoy balloon faces.
+// Type: PROXIMITY - faces nearest player.
+
+//# address-hook(0x07b0a8)
+function void fn07b0a8()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn07b0a8()
+		return
+	}
+
+	// Find closest player x among P1, P2, P3
+	u16 closest_x = u16[0xffffb000 + 0x10]
+	u16 closest_dist = abs(s16(objA0.position.x.u16 - closest_x))
+
+	u32 p2 = 0xffffb04a
+	if (u32[p2] != 0 && u8[p2 + 0x05] < base_state.DIED)
+	{
+		u16 d2 = abs(s16(objA0.position.x.u16 - u16[p2 + 0x10]))
+		if (d2 < closest_dist)
+		{
+			closest_x = u16[p2 + 0x10]
+			closest_dist = d2
+		}
+	}
+
+	u32 p3 = P3_ADDR
+	if (u32[p3] != 0 && u8[p3 + 0x05] < base_state.DIED)
+	{
+		u16 d3 = abs(s16(objA0.position.x.u16 - u16[p3 + 0x10]))
+		if (d3 < closest_dist)
+		{
+			closest_x = u16[p3 + 0x10]
+		}
+	}
+
+	D0.u16 = closest_x - objA0.position.x.u16
+	if (D0.s16 < 0)
+		objA0.render_flags &= ~render_flag.FLIP_X
+	else
+		objA0.render_flags |= render_flag.FLIP_X
+}
+
+
+//-------------------------------------------------------//
+// SSZ Mid-Boss 2: Decoy pop on hit                      //
+//-------------------------------------------------------//
+// fn07b0c2 determines which player hit the decoy balloon
+// using boss.remaining_hits & 0x03 to index P1 or P2.
+// Type: KNOCKBACK - damages the touching player.
+// The base indexes: 0,1 -> P1 (0xffffb000), 2,3 -> P2
+// We patch to also recognize P3 hits.
+
+//# address-hook(0x07b0c2)
+function void fn07b0c2()
+{
+	base.fn07b0c2()
+
+	// The base already handles the pop. But if P3 was the one
+	// who touched the decoy (collision system sets boss.remaining_hits),
+	// we need to ensure damage is applied to P3 too.
+	// Since the base uses a lookup table for P1/P2 only,
+	// P3 collision won't map correctly. We check if P3 is in
+	// contact and apply damage directly.
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	if (boss.remaining_hits != 0)
+	{
+		A1 = P3_ADDR
+		if (u32[A1] != 0 && u8[A1 + 0x34] == 0 && u8[A1 + 0x05] < base_state.DIED)
+		{
+			s16 dx = s16(objA0.position.x.u16) - s16(objA1.position.x.u16)
+			s16 dy = s16(objA0.position.y.u16) - s16(objA1.position.y.u16)
+			if (abs(dx) < 0x18 && abs(dy) < 0x18)
+			{
+				fn0857c2()
+				if (_equal())
+				{
+					Enemy.DamageCharacter()
+				}
+			}
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// SSZ Mid-Boss 2: Player hurt detection                 //
+//-------------------------------------------------------//
+// fn07ac06 checks if P1 or P2 is in HURT state to
+// adjust the balloon ring animation.
+// Type: PROXIMITY - adjusts behavior on player hurt.
+
+//# address-hook(0x07ac06)
+function void fn07ac06()
+{
+	base.fn07ac06()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// If P3 is hurt, also trigger the balloon ring adjustment
+	if (u8[P3_ADDR + 0x05] == base_state.HURT)
+	{
+		A1 = 0xfffffa82
+		D0.u8 = u8[A1 + 0x02] & 0x0f
+		if (D0.u8 != 0x04)
+		{
+			u8[A1 + 0x02] &= 0xf0
+			u8[A1 + 0x02] |= 0x04
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// SSZ Mid-Boss 2: Decoy launch direction                //
+//-------------------------------------------------------//
+// fn07ae22 checks P1 x-position to decide decoy launch
+// direction when spawned.
+// Type: PROXIMITY - aims toward closest player.
+// The check (line: D0.u16 = u16[0xffffb000 + 0x10] - ...)
+// occurs inside fn07ae22 which has complex state logic.
+// We cannot easily post-hook this. However, the decoy's
+// facing is later corrected by fn07b0a8 which we already
+// override, so the net effect is covered.
+

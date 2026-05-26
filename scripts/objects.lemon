@@ -1,0 +1,3128 @@
+
+//-------------------------------------------------------//
+// Object collision overrides for Player 3               //
+//-------------------------------------------------------//
+// The base game's platform functions (fn01dc56, etc.)
+// check P1 then P2. They save/restore D1-D4 before the
+// P1 check, but P2 is the last check so its register
+// corruption doesn't matter — unless we add P3.
+//
+// Strategy: save D1-D4 BEFORE calling base, let base
+// handle P1/P2 (corrupting registers), then restore
+// D1-D4 and run the P3 check with correct parameters.
+//
+// P3 tracks platform riding via char.object_standing_on
+// (offset 0x42), matching the game's own mechanism.
+// We can't use the object's flags2a bits (no room for
+// a P3_ON_OBJECT flag), so we check from P3's side only.
+
+
+//-------------------------------------------------------//
+// Core P3 collision check                               //
+//-------------------------------------------------------//
+
+function void P3.PlatformCheck()
+{
+	u32 p3 = P3_ADDR
+	if (u32[p3] == 0)
+		return
+	if ((u8[p3 + 0x04] & render_flag.VISIBLE) == 0)
+		return
+	if (u8[p3 + 0x05] >= base_state.DIED)
+		return
+
+	// If P3 is already riding this object, check continued contact
+	if ((u8[p3 + 0x2a] & char.flag.ON_OBJECT) && u16[p3 + 0x42] == (A0 & 0xffff))
+	{
+		u16 fullWidth = D1.u16 * 2
+		s16 dx = s16(u16[p3 + 0x10]) - s16(objA0.position.x.u16) + s16(D1.u16)
+
+		if (dx >= 0 && u16(dx) < fullWidth && (u8[p3 + 0x2a] & char.flag.IN_AIR) == 0)
+		{
+			// Still on platform — carry P3 with platform movement
+			u32 backupA1 = A1
+			A1 = p3
+			u32 backupD2 = D2
+			D2.u16 = D4.u16
+			UpdateSonicPositionOnMovingObject()
+			D2 = backupD2
+			A1 = backupA1
+			D4 = 0
+			return
+		}
+
+		// P3 walked off or jumped — release
+		u8[p3 + 0x2a] &= ~char.flag.ON_OBJECT
+		u8[p3 + 0x2a] |= char.flag.IN_AIR
+		u16[p3 + 0x42] = 0
+		return
+	}
+
+	// New collision check — same math as fn01dcb6_internal
+	s16 dx = s16(u16[p3 + 0x10]) - s16(objA0.position.x.u16)
+	s16 dy = s16(u16[p3 + 0x14]) - s16(objA0.position.y.u16)
+
+	if (abs(dx) >= s16(D1.u16) || abs(dy) >= s16(D2.u16))
+		return
+
+	if (dy < 0 && s16[p3 + 0x1a] >= 0)
+	{
+		// Approaching from above — land on platform
+		u16[p3 + 0x14] = objA0.position.y.u16 - D3.u16
+		s16[p3 + 0x1a] = 0
+		u8[p3 + 0x2a] &= ~char.flag.IN_AIR
+		u8[p3 + 0x2a] |= char.flag.ON_OBJECT
+		u16[p3 + 0x42] = A0 & 0xffff
+	}
+	else if (abs(dx) > abs(dy))
+	{
+		// Side collision — push horizontally
+		if (dx > 0)
+			u16[p3 + 0x10] = objA0.position.x.u16 + u16(D1.u16)
+		else
+			u16[p3 + 0x10] = objA0.position.x.u16 - u16(D1.u16)
+		s16[p3 + 0x18] = 0
+		s16[p3 + 0x1c] = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// P3 platform release check                             //
+//-------------------------------------------------------//
+// Called each frame from BaseUpdate.Knuckles3 to handle
+// the case where the platform P3 was standing on got
+// unloaded or moved away without running its collision.
+
+function void P3.CheckPlatformRelease()
+{
+	u32 p3 = P3_ADDR
+	if ((u8[p3 + 0x2a] & char.flag.ON_OBJECT) == 0)
+		return
+
+	u16 objSlot = u16[p3 + 0x42]
+	if (objSlot == 0)
+	{
+		u8[p3 + 0x2a] &= ~char.flag.ON_OBJECT
+		u8[p3 + 0x2a] |= char.flag.IN_AIR
+		return
+	}
+
+	// Check if the object is still alive
+	u32 objAddr = 0xffff0000 + objSlot
+	if (u32[objAddr] == 0)
+	{
+		u8[p3 + 0x2a] &= ~char.flag.ON_OBJECT
+		u8[p3 + 0x2a] |= char.flag.IN_AIR
+		u16[p3 + 0x42] = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// Platform collision overrides (with register protection)
+//-------------------------------------------------------//
+
+//# address-hook(0x01dc56)
+function void fn01dc56()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.fn01dc56()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+function void CheckCharacterOnClimbableObject()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.CheckCharacterOnClimbableObject()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+//# address-hook(0x01dd0e)
+function void fn01dd0e()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.fn01dd0e()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+//# address-hook(0x01ddc6)
+function void fn01ddc6()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.fn01ddc6()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+//# address-hook(0x01de20)
+function void fn01de20()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.fn01de20()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+function void PlatformCheckClimbOn()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.PlatformCheckClimbOn()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+//# address-hook(0x01e2fe)
+function void fn01e2fe()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.fn01e2fe()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+//# address-hook(0x01e356)
+function void fn01e356()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.fn01e356()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+
+//-------------------------------------------------------//
+// Springs overrides                                     //
+//-------------------------------------------------------//
+// Springs: save/restore registers, then check P3 bounce
+// with the correct collision box parameters.
+
+//# address-hook(0x022ef4)
+function void SpringVertical.Update()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+
+	base.SpringVertical.Update()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		P3.CheckSpringBounce(false, false)
+	}
+}
+
+//# address-hook(0x023326)
+function void SpringVerticalFlipped.Update()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+
+	base.SpringVerticalFlipped.Update()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		P3.CheckSpringBounce(true, false)
+	}
+}
+
+//# address-hook(0x023050)
+function void SpringHorizontal.Update()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+
+	base.SpringHorizontal.Update()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		P3.CheckSpringBounce(false, true)
+	}
+}
+
+//# address-hook(0x023490)
+function void SpringDiagonal.Update()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+
+	base.SpringDiagonal.Update()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		P3.CheckSpringBounce(false, false)
+	}
+}
+
+function void P3.CheckSpringBounce(bool flipY, bool horizontal)
+{
+	u32 p3 = P3_ADDR
+	if ((u8[p3 + 0x04] & render_flag.VISIBLE) == 0)
+		return
+	if (u8[p3 + 0x05] >= base_state.DIED)
+		return
+
+	s16 dx = s16(u16[p3 + 0x10]) - s16(objA0.position.x.u16)
+	s16 dy = s16(u16[p3 + 0x14]) - s16(objA0.position.y.u16)
+
+	s16 hw = horizontal ? 8 : 27
+	s16 hh = horizontal ? 14 : 16
+
+	if (abs(dx) >= hw || abs(dy) >= hh)
+		return
+
+	// Release from any platform before spring bounce
+	if (u8[p3 + 0x2a] & char.flag.ON_OBJECT)
+	{
+		u8[p3 + 0x2a] &= ~char.flag.ON_OBJECT
+		u16[p3 + 0x42] = 0
+	}
+
+	A1 = p3
+	if (horizontal)
+	{
+		SpringHorizontal.ApplyToCharacter()
+	}
+	else if (flipY)
+	{
+		SpringVerticalFlipped.ApplyToCharacter()
+	}
+	else
+	{
+		SpringVertical.ApplyToCharacter()
+	}
+}
+
+
+//-------------------------------------------------------//
+// Monitor blocking for P3                               //
+//-------------------------------------------------------//
+
+//# address-hook(0x01d5dc)
+function void MonitorIntact.UpdateDefault()
+{
+	u32 savedD1 = D1
+	u32 savedD2 = D2
+	u32 savedD3 = D3
+	u32 savedD4 = D4
+
+	base.MonitorIntact.UpdateDefault()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D1 = savedD1
+		D2 = savedD2
+		D3 = savedD3
+		D4 = savedD4
+		P3.PlatformCheck()
+	}
+}
+
+
+//-------------------------------------------------------//
+// Spikes override                                       //
+//-------------------------------------------------------//
+
+//# address-hook(0x024090)
+function void Spikes.Update()
+{
+	base.Spikes.Update()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 p3 = P3_ADDR
+		if ((u8[p3 + 0x04] & render_flag.VISIBLE) == 0)
+			return
+		if (u8[p3 + 0x05] >= base_state.DIED)
+			return
+
+		s16 dx = s16(u16[p3 + 0x10]) - s16(objA0.position.x.u16)
+		s16 dy = s16(u16[p3 + 0x14]) - s16(objA0.position.y.u16)
+		if (abs(dx) < s16(objA0.box_size.x) + 8 && abs(dy) < s16(objA0.box_size.y) + 8)
+		{
+			A1 = p3
+			DamageCharacter()
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// CNZ Act 1: remove path-blocking barrel (diagnostic)   //
+//-------------------------------------------------------//
+
+function void CNZBarrel.Update()
+{
+	if (useSonicTailsAndKnuckles && global.zone_act == 0x0300)
+	{
+		if (objA0.countdown_value == 0x02a0)
+		{
+			UnloadObject()
+			return
+		}
+	}
+	base.CNZBarrel.Update()
+}
+
+
+
+//-------------------------------------------------------//
+// CheckDistanceToPlayers override                       //
+//-------------------------------------------------------//
+// Extends to also consider Player 3 (Knuckles at P3_ADDR).
+// This single override cascades to all enemies/bosses that call it.
+
+//# address-hook(0x084b18)
+function void CheckDistanceToPlayers()
+{
+	// Let the base find the closest between P1 and P2
+	base.CheckDistanceToPlayers()
+
+	// Now also check P3
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 A3 = P3_ADDR
+		if (u8[A3 + 0x04] & render_flag.VISIBLE)
+		{
+			s16 D4 = s16(objA0.position.x.u16 - u16[A3 + 0x10])
+			u16 D5 = abs(D4)
+			if (D5 < D2.u16)
+			{
+				A1 = A3
+				D0 = (D4 < 0) ? 2 : 0
+				D2.u16 = D5
+
+				// Recompute Y distance against new closest player
+				D3.s16 = objA0.position.y.u16 - u16[A1 + 0x14]
+				D1 = (D3.s16 < 0) ? 2 : 0
+				D3.u16 = abs(D3.s16)
+			}
+		}
+	}
+}
+
+
+
+//-------------------------------------------------------//
+// Object "basics" overrides for Player 3                //
+//-------------------------------------------------------//
+// Extends P1/P2 iteration in monitors, autospin,
+// capsule, giant ring, and signpost to include P3.
+//
+// P3 uses bit 5 (0x20) for collision flags.
+// After every P3 collision check we clear it:
+//   objA0.flags2a &= ~0x20
+// to prevent conflict with P1_PUSHING.
+
+
+// MONITOR collision is in objects_overrides.lemon
+
+
+//=======================================================//
+//  MONITOR — MonitorIntact.Opening                      //
+//=======================================================//
+// Clears P1/P2 push/on-object flags when monitor opens.
+// We add P3 flag clearing.
+
+//# address-hook(0x01d716)
+function void MonitorIntact.Opening()
+{
+	// Clear P3 flags before base runs (base clears P1/P2 then
+	// masks flags2a to 0x03 which already drops bit 5, but we
+	// must also clear the character-side flags).
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.flags2a & 0x20)	// P3 on object or pushing
+		{
+			u8[P3_ADDR + 0x2a] &= ~(char.flag.PUSHING | char.flag.ON_OBJECT)
+		}
+	}
+
+	base.MonitorIntact.Opening()
+}
+
+
+//=======================================================//
+//  AUTOSPIN — fn01e7e2 (init, vertical subtype check)   //
+//=======================================================//
+// Init compares player Y positions against the object.
+// Base checks P1 (0x34) and P2 (0x35). We add P3 (0x36).
+
+//# address-hook(0x01e7e2)
+function void fn01e7e2()
+{
+	// Init P3 direction byte BEFORE base, because base
+	// chains into fn01e9e6/fn01e896 which read byte 0x36
+	// on the first frame. Without pre-init, a false
+	// autospin trigger could occur.
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.subtype2c & 0x04)
+		{
+			// Vertical subtype: compare Y positions
+			A1 = P3_ADDR
+			if (objA0.position.y.u16 < objA1.position.y.u16)
+			{
+				u8[A0 + 0x36] = 1
+			}
+		}
+		// Horizontal subtype is handled by fn01e85c override
+	}
+
+	base.fn01e7e2()
+}
+
+
+//=======================================================//
+//  AUTOSPIN — fn01e85c (horizontal init)                //
+//=======================================================//
+// Sets initial direction flag for each player.
+// Base sets 0x34 (P1) and 0x35 (P2). We add 0x36 (P3).
+
+//# address-hook(0x01e85c)
+function void fn01e85c()
+{
+	// Init P3 byte BEFORE base, because base chains into
+	// fn01e896 -> fn01e8c6 which reads byte 0x36 on the
+	// first frame. Without pre-init, P3 could falsely
+	// trigger autospin if already past the trigger line.
+	if (useSonicTailsAndKnuckles)
+	{
+		D1.u16 = objA0.position.x.u16
+		A1 = P3_ADDR
+		if (D1.u16 < objA1.position.x.u16)
+		{
+			u8[A0 + 0x36] = 1
+		}
+	}
+
+	base.fn01e85c()
+}
+
+
+//=======================================================//
+//  AUTOSPIN — fn01e896 (horizontal update)              //
+//=======================================================//
+// Checks P1 then P2 against the trigger line.
+// We add a P3 check using fn01e8c6.
+
+//# address-hook(0x01e896)
+function void fn01e896()
+{
+	if (debug_mode.state == 0)
+	{
+		D1.u16 = objA0.position.x.u16
+		A2 = A0 + 0x34
+
+		// P1
+		A1 = 0xffffb000
+		fn01e8c6()
+
+		// P2
+		A1 = 0xffffb04a
+		if (tails.ai_routine != 0x04)
+		{
+			fn01e8c6()
+		}
+
+		// P3: reset A2 to ensure it points at byte 0x36
+		// regardless of whether P2 check ran (fn01e8c6
+		// auto-increments A2).
+		if (useSonicTailsAndKnuckles)
+		{
+			A2 = A0 + 0x36
+			A1 = P3_ADDR
+			if (u8[A1 + 0x04] & render_flag.VISIBLE)
+			{
+				fn01e8c6()
+			}
+		}
+
+		CheckForUnloadObject()
+	}
+	else
+	{
+		DrawOrUnloadObject()
+	}
+}
+
+
+//=======================================================//
+//  AUTOSPIN — fn01e9e6 (vertical update)                //
+//=======================================================//
+// Same pattern but for vertical trigger line.
+
+//# address-hook(0x01e9e6)
+function void fn01e9e6()
+{
+	if (debug_mode.state == 0)
+	{
+		D1.u16 = objA0.position.y.u16
+		A2 = A0 + 0x34
+
+		// P1
+		A1 = 0xffffb000
+		fn01ea14()
+
+		// P2
+		A1 = 0xffffb04a
+		if (tails.ai_routine != 0x04)
+		{
+			fn01ea14()
+		}
+
+		// P3: reset A2 to byte 0x36 (same reason as fn01e896)
+		if (useSonicTailsAndKnuckles)
+		{
+			A2 = A0 + 0x36
+			A1 = P3_ADDR
+			if (u8[A1 + 0x04] & render_flag.VISIBLE)
+			{
+				fn01ea14()
+			}
+		}
+
+		CheckForUnloadObject()
+	}
+	else
+	{
+		DrawOrUnloadObject()
+	}
+}
+
+
+//=======================================================//
+//  CAPSULE — fn0868f8 (countdown + win pose trigger)    //
+//=======================================================//
+// Waits for countdown, then checks if P1 is on ground
+// to trigger level results. We extend to also accept P3
+// being on the ground (in case P1 is dead/offscreen).
+// NOTE: The base function sets A1 = 0xffffb000 and checks
+// P1 only. We keep that — P3 should not independently
+// trigger results, but we need P3 to do a win pose once
+// results start. That is handled by fn086932 below.
+
+
+//=======================================================//
+//  CAPSULE — fn086932 (post-results, P2 win pose)       //
+//=======================================================//
+// After level results start, waits for P2 to land and
+// then gives P2 a win pose. We extend for P3.
+
+//# address-hook(0x086932)
+function void fn086932()
+{
+	base.fn086932()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		// Only proceed once results are active and P2 is already handled
+		if (level.wait_for_results && (objA0.flags38 & 0x80))
+		{
+			A1 = P3_ADDR
+			// Skip if P3 is dead, in air, or invisible
+			if ((u8[A1 + 0x2a] & 0x80) == 0)
+			{
+				if ((u8[A1 + 0x2a] & char.flag.IN_AIR) == 0)
+				{
+					if (u8[A1 + 0x05] < base_state.DIED)
+					{
+						StartCharacterWinPose()
+					}
+				}
+			}
+		}
+	}
+}
+
+
+//=======================================================//
+//  CAPSULE — fn08672a (unlock button, standing capsule) //
+//=======================================================//
+// Checks P1_ON_OBJECT | P2_ON_OBJECT to detect button
+// press. We extend to also detect P3 (bit 5 = 0x20).
+// Note: fn01dc56 override in objects_overrides.lemon
+// already runs the P3 platform collision for us. We just
+// need to check the resulting bit.
+
+//# address-hook(0x08672a)
+function void fn08672a()
+{
+	fn086a3e()
+	u8 detectBits = object.flag.P1_ON_OBJECT | object.flag.P2_ON_OBJECT
+	if (useSonicTailsAndKnuckles)
+	{
+		detectBits |= 0x20	// P3 on-object bit
+	}
+
+	if (objA0.flags2a & detectBits)
+	{
+		objA0.update_address = 0x086754
+		A1 = 0xffff0000 + u16[A0 + 0x46]
+		objA1.flags38 |= 0x02
+		objA0.animation.sprite = 0x0c
+		objA0.flags2a &= ~0x20	// Clear P3 bit
+	}
+	Child.DrawSprite()
+}
+
+
+//=======================================================//
+//  CAPSULE — fn086770 (unlock button, flying capsule)   //
+//=======================================================//
+// Same pattern for the flying capsule's upside-down button.
+// fn0858f8 checks P1/P2 overlap — we extend for P3 below
+// via the fn0858f8 override.
+// The button press detection here checks D0 results from
+// fn0858f8. If P3 triggered it, D0 will carry P3_ADDR
+// from our fn0858f8 override. No additional override needed
+// for this function since fn0858f8 handles the extension.
+
+
+//=======================================================//
+//  SHARED — fn0858f8 (bounding-box overlap, P1/P2)      //
+//=======================================================//
+// Used by giant rings, signpost, and flying capsule button
+// to detect which player is overlapping. Returns character
+// addresses packed in D0 (low 16 = P1, high 16 = P2).
+// We extend to also check P3 and pack it into a third
+// position. Since the callers only use low/high 16 of D0,
+// we check P3 separately after calling base.
+
+//# address-hook(0x0858f8)
+function void fn0858f8()
+{
+	base.fn0858f8()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		// D3-D6 still hold the bounding box from base
+		A2 = P3_ADDR
+		if (u8[A2 + 0x04] & render_flag.VISIBLE)
+		{
+			D1.u16 = u16[A2 + 0x10]
+			D2.u16 = u16[A2 + 0x14]
+			if (D1.u16 >= D3.u16 && D1.u16 < D5.u16)
+			{
+				if (D2.u16 >= D4.u16 && D2.u16 < D6.u16)
+				{
+					// P3 is overlapping — inject into D0
+					// Callers check D0.u16 (P1) and D0>>16 (P2).
+					// If P1 slot is empty, put P3 there; else if P2
+					// slot is empty, put P3 there. This ensures
+					// existing callers pick up P3 naturally.
+					if ((D0 & 0xffff) == 0)
+					{
+						D0.u16 = A2.u16
+					}
+					else if ((D0 >> 16) == 0)
+					{
+						D0 = (D0 & 0xffff) | (u32(A2.u16) << 16)
+					}
+				}
+			}
+		}
+	}
+}
+
+
+//=======================================================//
+//  GIANT RING — fn0616e6 (regular update + enter check) //
+//=======================================================//
+// When a player overlaps the giant ring (detected via
+// fn0858f8), the base code sets A1 = 0xffffb000 and makes
+// P1 disappear into the ring. If P3 triggered the overlap
+// via our fn0858f8 override, D0 will carry P3_ADDR and
+// the base A1 = 0xffffb000 assignment handles it (only P1
+// actually enters the ring, per original design).
+//
+// We also need to hide P3 when P1 enters the ring, similar
+// to how P2/Tails is hidden when tails.carrying is set.
+
+//# address-hook(0x0616e6)
+function void fn0616e6()
+{
+	base.fn0616e6()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		// If P1 entered the ring (base_state moved to 0x04),
+		// also hide P3 so they don't float around.
+		if (objA0.base_state == 0x04)
+		{
+			A1 = P3_ADDR
+			objA1.state = char.state.DISAPPEARED
+			objA1.animation.sprite = 0
+			u8[A1 + 0x2e] = (control_flag.DISABLE_WALLS | control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE | 0x10)
+		}
+	}
+}
+
+
+//=======================================================//
+//  SIGNPOST — fn083912 (wait for P1 to land, win pose)  //
+//=======================================================//
+// Base waits for P1 to land and then triggers win pose +
+// level results. We extend to also give P3 a win pose.
+// We do NOT override this — fn086932 (called from fn083938)
+// already handles the post-results win pose for P2/P3
+// via our fn086932 override above.
+
+
+//=======================================================//
+//  SIGNPOST — fn083a50 (signpost hit by rolling player) //
+//=======================================================//
+// Uses fn0858f8 to detect overlap, then checks if the
+// overlapping player is rolling. Our fn0858f8 override
+// already includes P3, so P3 can hit the signpost.
+// No additional override needed.
+
+
+//=======================================================//
+//  SIGNPOST — fn083938 (done state, calls fn086932)     //
+//=======================================================//
+// Calls fn086932 which we already override above to
+// include P3 win pose. No additional override needed.
+
+
+//=======================================================//
+//  SIGNPOST — StartCharacterWinPose                     //
+//=======================================================//
+// Base clears P1_PUSHING and P2_PUSHING from flags2a.
+// We also clear the P3 bit.
+
+function void StartCharacterWinPose()
+{
+	base.StartCharacterWinPose()
+
+	// Clear P3's pushing/on-object bit so objects don't
+	// think P3 is still interacting
+	objA0.flags2a &= ~0x20
+}
+
+
+
+//-------------------------------------------------------//
+// Level object overrides for Player 3                   //
+//-------------------------------------------------------//
+// Extends P1/P2 iteration in level objects (bridges,
+// collapsing cliffs, crushers, etc.) to include P3.
+// P3 uses bit 5 (0x20) for collision; cleared after use.
+
+
+//-------------------------------------------------------//
+// Bridge — fn038a88: depression check for P1/P2         //
+//-------------------------------------------------------//
+// Original iterates P2 then P1 with hardcoded addresses.
+// We add a P3 pass after base handles P1/P2.
+
+//# address-hook(0x038a88)
+function void fn038a88()
+{
+	base.fn038a88()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D6 = 5		// bit 5 for P3
+		D5 = 0x3b	// Use same value3b slot as P2 (P3 depression shares P2 slot)
+		fn038aa2()
+		objA0.flags2a &= ~0x20
+	}
+}
+
+
+//-------------------------------------------------------//
+// Bridge — fn038b2a: skewed bridge (ICZ) P1/P2 check    //
+//-------------------------------------------------------//
+
+//# address-hook(0x038b2a)
+function void fn038b2a()
+{
+	base.fn038b2a()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D6 = 5		// bit 5 for P3
+		D5 = 0x3b
+		fn038b44()
+		objA0.flags2a &= ~0x20
+	}
+}
+
+
+//-------------------------------------------------------//
+// Bridge — fn038bd8: skewed bridge position tracking    //
+//-------------------------------------------------------//
+
+//# address-hook(0x038bd8)
+function void fn038bd8()
+{
+	base.fn038bd8()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D6 = 5		// bit 5 for P3
+		D5 = 0x3b
+		fn038bea()
+		objA0.flags2a &= ~0x20
+	}
+}
+
+
+//-------------------------------------------------------//
+// Bridge — fn0387b6: HCZ bridge collapse, set falling   //
+//-------------------------------------------------------//
+
+//# address-hook(0x0387b6)
+function void fn0387b6()
+{
+	base.fn0387b6()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		if (u8[P3_ADDR + 0x20] == char.state.RUNNING || u8[P3_ADDR + 0x20] == char.state.STANDING)
+		{
+			u8[P3_ADDR + 0x20] = char.state.FALLING_PANIC
+			u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Bridge — fn03890c: unload bridge, release characters   //
+//-------------------------------------------------------//
+
+//# address-hook(0x03890c)
+function void fn03890c()
+{
+	base.fn03890c()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.flags2a & 0x20)
+		{
+			objA0.flags2a &= ~0x20
+			u8[P3_ADDR + 0x2a] &= ~char.flag.ON_OBJECT
+			u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Bridge — fn020b8c: barrier collapse, release chars    //
+//-------------------------------------------------------//
+
+//# address-hook(0x020b8c)
+function void fn020b8c()
+{
+	--objA0.flags38
+	if (objA0.flags38 == 0)
+		objA0.update_address = 0x020b74
+
+	D3.u8 = objA0.flags38
+	A2 = u32[A0 + 0x30]
+	D1 = objA0.box_size.x
+
+	A1 = 0xffffb000
+	D6 = 3		// object.flag.P1_ON_OBJECT
+	fn020bba()
+
+	A1 = 0xffffb04a
+	D6 = 4		// object.flag.P2_ON_OBJECT
+	fn020bba()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D6 = 5		// bit 5 for P3
+		fn020bba()
+		objA0.flags2a &= ~0x20
+	}
+
+	DrawOrUnloadObject()
+}
+
+
+//-------------------------------------------------------//
+// Collapsing Cliff — fn0205de: release characters       //
+//-------------------------------------------------------//
+// Original loop: for i < 2. Extend to 3 for P3.
+
+//# address-hook(0x0205de)
+function void fn0205de()
+{
+	fn0205b6()
+	--objA0.flags38
+	if (objA0.flags38 == 0)
+	{
+		objA0.update_address = 0x020620
+
+		u8 maxPlayers = useSonicTailsAndKnuckles ? 3 : 2
+		for (u8 i = 0; i < maxPlayers; ++i)
+		{
+			A1 = getPlayerAddress(i)
+			u8 bit = (i < 2) ? (1 << (3 + i)) : 0x20
+
+			if (objA0.flags2a & bit)
+			{
+				objA0.flags2a &= ~bit
+				objA1.flags2a &= ~(char.flag.ON_OBJECT | char.flag.PUSHING)
+				objA1.flags2a |= char.flag.IN_AIR
+				u8[A1 + 0x21] = char.state.RUNNING2
+			}
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Rocks — fn01ff1e: release characters on rock break    //
+//-------------------------------------------------------//
+
+//# address-hook(0x01ff1e)
+function void fn01ff1e()
+{
+	base.fn01ff1e()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.flags2a & 0x20)
+		{
+			objA0.flags2a &= ~0x20
+			u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+			u8[P3_ADDR + 0x2a] &= ~char.flag.ON_OBJECT
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Rocks — fn0200a2: pushable rock pushing check         //
+//-------------------------------------------------------//
+// Original checks P1 and P2 pushing. Add P3.
+
+//# address-hook(0x0200a2)
+function void fn0200a2()
+{
+	base.fn0200a2()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		D3.u8 = objA0.flags2a & 0x20
+		if (D3.u8 != 0)
+		{
+			D2.u16 = objA0.position.x.u16
+
+			A1 = P3_ADDR
+			D0.u8 = u8[P3_ADDR + 0x2a]
+			D6 = 5		// bit 5 for P3
+			fn0200cc()
+			objA0.flags2a &= ~0x20
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Rocks — fn01ff48: LRZ layered rock, hit from below    //
+//-------------------------------------------------------//
+// Release P3 when rock is destroyed from below.
+
+//# address-hook(0x01ff48)
+function void fn01ff48()
+{
+	base.fn01ff48()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.flags2a & 0x20)
+		{
+			A1 = P3_ADDR
+			u8[A1 + 0x2a] |= char.flag.IN_AIR
+			u8[A1 + 0x2a] &= ~char.flag.ON_OBJECT
+			objA0.flags2a &= ~0x20
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Crusher — Crusher.Update: damage characters           //
+//-------------------------------------------------------//
+// Original checks D6 bits for P1 (0x04) and P2 (0x08).
+// P3 collision uses bit 0x10 from the fn01dc56 override
+// (D6 bits shift: P3 is bit 2 in the upper D6 word).
+
+function void Crusher.Update()
+{
+	base.Crusher.Update()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		// Re-run the position/collision check for P3 to see if crusher hit P3.
+		// Our fn01dc56 override already ran P3 collision during base call.
+		// Check if P3 is standing on or touching the crusher.
+		// The simplest approach: check P3 proximity manually.
+		u16 cx = objA0.position.x.u16
+		u16 cy = objA0.position.y.u16
+		u16 px = u16[P3_ADDR + 0x10]
+		u16 py = u16[P3_ADDR + 0x14]
+		u16 bx = objA0.box_size.x
+		u16 by = objA0.box_size.y
+
+		s16 dx = px - cx
+		s16 dy = py - cy
+		if (dx >= -s16(bx + 11) && dx <= s16(bx + 11) && dy >= -s16(by) && dy <= s16(by))
+		{
+			// Check if P3 is being hit from below (crush)
+			if (dy < 0 && u8[P3_ADDR + 0x2a] & char.flag.IN_AIR)
+			{
+				A1 = P3_ADDR
+				DamageCharacter()
+			}
+		}
+		objA0.flags2a &= ~0x20
+	}
+}
+
+
+//-------------------------------------------------------//
+// Barrier — fn0209d0: horizontal barrier (MGZ end)      //
+//-------------------------------------------------------//
+// Release P3 when barrier is destroyed.
+
+//# address-hook(0x0209d0)
+function void fn0209d0()
+{
+	// Horizontal barrier towards the end of MGZ 1
+	D1 = objA0.box_size.x
+	D3.u16 = 0x10
+	D4.u16 = objA0.position.x.u16
+	PlatformCheckClimbOn()  // Our override already handles P3
+
+	D0.u8 = objA0.flags2a & (object.flag.P1_ON_OBJECT | object.flag.P2_ON_OBJECT)
+	u8 p3on = (useSonicTailsAndKnuckles && (objA0.flags2a & 0x20)) ? 1 : 0
+
+	if (D0.u8 != 0 || p3on != 0)
+	{
+		// Query the protection flag set by spinning top
+		D1.u8 = 0
+		if (D0.u8 != 0)
+		{
+			D1.u8 = (D0.u8 & object.flag.P1_ON_OBJECT) ? u8[0xffffb000 + 0x37] : u8[0xffffb04a + 0x37]
+		}
+		if (D1.u8 == 0 && p3on != 0)
+		{
+			D1.u8 = u8[P3_ADDR + 0x37]
+		}
+
+		if (D1.u8 & 0x80)
+		{
+			if (objA0.flags2a & object.flag.P1_ON_OBJECT)
+			{
+				objA0.flags2a &= ~object.flag.P1_ON_OBJECT
+				A1 = 0xffffb000
+				u8[A1 + 0x2a] &= ~char.flag.ON_OBJECT
+			}
+
+			if (objA0.flags2a & object.flag.P2_ON_OBJECT)
+			{
+				objA0.flags2a &= ~object.flag.P2_ON_OBJECT
+				A1 = 0xffffb04a
+				u8[A1 + 0x2a] &= ~char.flag.ON_OBJECT
+			}
+
+			if (useSonicTailsAndKnuckles && (objA0.flags2a & 0x20))
+			{
+				objA0.flags2a &= ~0x20
+				u8[P3_ADDR + 0x2a] &= ~char.flag.ON_OBJECT
+			}
+
+			A4 = 0x020a76
+			++objA0.animation.sprite
+			objA0.sprite_priority = 0x80
+			objA0.update_address = 0x020a56
+			Wall.Destroy()
+
+			if (objA0.respawn_entry)
+			{
+				A1 = 0xffff0000 + objA0.respawn_entry
+				u8[A1] &= ~0x80
+				objA0.respawn_entry = 0
+			}
+
+			fn020a56()
+			return
+		}
+	}
+
+	objA0.flags2a &= ~0x20
+	DrawOrUnloadObject()
+}
+
+
+//-------------------------------------------------------//
+// Air Bubbles — fn02fba8: bubble collection proximity   //
+//-------------------------------------------------------//
+// Original checks P1 then P2. Add P3.
+
+//# address-hook(0x02fba8)
+function void fn02fba8()
+{
+	base.fn02fba8()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		fn02fbb2()
+	}
+}
+
+
+//-------------------------------------------------------//
+// Player Launcher — fn03b97a: launcher iteration        //
+//-------------------------------------------------------//
+// Original checks P1 (bit 3) then P2 (bit 4). Add P3 (bit 5).
+
+//# address-hook(0x03b97a)
+function void fn03b97a()
+{
+	if (u8[A0 + 0x30] != 0)
+	{
+		--u8[A0 + 0x30]
+		if (u8[A0 + 0x30] == 0)
+		{
+			objA0.velocity.x = 0
+			objA0.update_address = 0x03ba4a
+			u8[A0 + 0x32] = 1
+		}
+
+		UpdateMovementStraightSimple()
+		if (u8[A0 + 0x31] != 0)
+		{
+			--u8[A0 + 0x31]
+			objA0.velocity.x <<= 1
+		}
+	}
+
+	A1 = 0xffffb000
+	D6 = 3		// object.flag.P1_ON_OBJECT
+	fn03b9d8()
+
+	A1 = 0xffffb04a
+	D6 = 4		// object.flag.P2_ON_OBJECT
+	fn03b9d8()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D6 = 5		// bit 5 for P3
+		fn03b9d8()
+		objA0.flags2a &= ~0x20
+	}
+
+	D1.u16 = 0x10
+	D3.u16 = 0x03
+	D4.u16 = objA0.position.x.u16
+	PlatformCheckClimbOn()
+
+	D0.u16 = u16[A0 + 0x44]
+	DrawOrUnloadObjectByD0()
+}
+
+
+//-------------------------------------------------------//
+// Upwind — fn03fbac: wind check iteration               //
+//-------------------------------------------------------//
+// Original checks P1 then P2. Add P3.
+
+//# address-hook(0x03fbac)
+function void fn03fbac()
+{
+	D2 = 0
+	A1 = 0xffffb000
+	fn03fbc4()
+
+	A1 = 0xffffb04a
+	fn03fbc4()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		fn03fbc4()
+	}
+
+	CheckForUnloadObject()
+}
+
+
+//-------------------------------------------------------//
+// Round Bumper — fn032f34: bumper bounce P1/P2          //
+//-------------------------------------------------------//
+// Original checks bits 0x01 (P1) and 0x02 (P2) in [A0+0x29].
+// P3 uses bit 0x04 via collision_attributes special handling.
+
+//# address-hook(0x032f34)
+function void fn032f34()
+{
+	A1 = 0xffffb000
+	if (u8[A0 + 0x29] & 0x01)
+	{
+		fn032f56()
+	}
+
+	A1 = 0xffffb04a
+	if (u8[A0 + 0x29] & 0x02)
+	{
+		fn032f56()
+	}
+
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		if (u8[A0 + 0x29] & 0x04)
+		{
+			fn032f56()
+		}
+	}
+
+	u8[A0 + 0x29] = 0
+}
+
+
+//-------------------------------------------------------//
+// Round Bumper — fn032ff0: competition mode bumper       //
+//-------------------------------------------------------//
+
+//# address-hook(0x032ff0)
+function void fn032ff0()
+{
+	if (u8[A0 + 0x29] != 0)
+	{
+		A1 = 0xffffb000
+		if (u8[A0 + 0x29] & 0x01)
+		{
+			fn03301c()
+		}
+
+		A1 = 0xffffb04a
+		if (u8[A0 + 0x29] & 0x02)
+		{
+			fn03301c()
+		}
+
+		if (useSonicTailsAndKnuckles)
+		{
+			A1 = P3_ADDR
+			if (u8[A0 + 0x29] & 0x04)
+			{
+				fn03301c()
+			}
+		}
+
+		u8[A0 + 0x29] = 0
+	}
+
+	fn03307c()
+}
+
+
+
+//-------------------------------------------------------//
+// Zone-specific object overrides for Player 3            //
+//-------------------------------------------------------//
+// Extends transport/interaction objects to include P3.
+// Objects with free per-player slots are overridden directly.
+// Objects whose slots are full use a shared-memory state pool
+// at 0x818500 (P3State) to store P3's per-object data.
+//
+// P3 uses bit 5 (0x20) for flags2a collision.
+// After any P3 collision check, clear: objA0.flags2a &= ~0x20
+
+
+// P3 state pool: 32 x 8-byte entries at 0x818500-0x8185FF.
+// Returns a stable shared-memory address for the current object (A0).
+function u32 P3State.Find()
+{
+	u16 index = ((A0 & 0xffff) / 0x4a) & 0x1f
+	return 0x818500 + u32(index) * 8
+}
+
+
+//=============================================================
+// HCZ Fan (wind push)
+//=============================================================
+// fn03064e calls fn03077e for P1/P2 wind push. Stateless --
+// no per-player memory needed. Add P3.
+
+//# address-hook(0x03064e)
+function void fn03064e()
+{
+	base.fn03064e()
+
+	// Add P3 wind push when fan is actively blowing.
+	// Guard: skip if object was unloaded by base (update_address zeroed).
+	if (useSonicTailsAndKnuckles && objA0.update_address != 0)
+	{
+		// Fan blows when: subtype bit 0x20 cleared OR trigger00 fired,
+		// AND either subtype 0x10 is set (always on) or toggle state off.
+		if ((objA0.subtype2c & 0x20) == 0 || level.trigger00 != 0)
+		{
+			if ((objA0.subtype2c & 0x10) != 0 || u8[A0 + 0x32] == 0)
+			{
+				A1 = P3_ADDR
+				fn03077e()
+			}
+		}
+	}
+}
+
+// Competition mode fan -- also stateless
+//# address-hook(0x030a10)
+function void fn030a10()
+{
+	A1 = 0xffffb000
+	fn030a38()
+
+	A1 = 0xffffb04a
+	fn030a38()
+
+	// P3
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		fn030a38()
+	}
+
+	++objA0.animation.sprite
+	if (objA0.animation.sprite >= 3)
+	{
+		objA0.animation.sprite = 0
+	}
+	DrawObject()
+}
+
+
+//=============================================================
+// CNZ Balloon bounce
+//=============================================================
+// fn031754 checks bits 0x01 (P1) and 0x02 (P2) in A0+0x29
+// for collision response. P3 uses bit 0x04 (set by the
+// collision system when P3 touches a SPECIAL collision object).
+// Stateless -- no per-player memory needed.
+
+//# address-hook(0x031754)
+function void fn031754()
+{
+	A1 = 0xffffb000
+	if (u8[A0 + 0x29] & 0x01)
+	{
+		u8[A0 + 0x29] &= ~0x01
+		fn0317ae()
+	}
+
+	A1 = 0xffffb04a
+	if (u8[A0 + 0x29] & 0x02)
+	{
+		u8[A0 + 0x29] &= ~0x02
+		fn0317ae()
+	}
+
+	// P3 collision response (bit 0x04)
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		if (u8[A0 + 0x29] & 0x04)
+		{
+			u8[A0 + 0x29] &= ~0x04
+			fn0317ae()
+		}
+	}
+
+	Object.animationUpdate(0x03185e)
+
+	objA0.position.y.u16 = objA0.value32 + (lookupSin(objA0.value26) >> 5)
+	++objA0.value26
+
+	fn01b662()
+}
+
+
+//=============================================================
+// CNZ Barrel -- weight/push only
+//=============================================================
+// fn032208: barrel up/down physics reads P1_ON_OBJECT and
+// P2_ON_OBJECT to detect character weight, and reads D-pad
+// for push input. Uses only flags2a bits, no per-player
+// state block. Add P3 weight (bit 5) and input.
+
+//# address-hook(0x032208)
+function void fn032208()
+{
+	u16 oldFlags = u16[A0 + 0x3c]
+	u16 newFlags = objA0.flags2a & (object.flag.P1_ON_OBJECT | object.flag.P2_ON_OBJECT)
+
+	// Include P3 on-object flag (bit 5)
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.flags2a & 0x20)
+			newFlags |= 0x20
+	}
+
+	u16[A0 + 0x3c] = newFlags
+
+	if (newFlags > oldFlags)
+	{
+		if (abs(objA0.velocity.y) < 0x0200)
+		{
+			D0.u16 = objA0.position.y.u16 - u16[A0 + 0x30] + 0x40
+			if (D0.u16 < 0x80)
+			{
+				objA0.velocity.y = min(objA0.velocity.y + 0x400, s16(objA0.value3e))
+			}
+		}
+	}
+
+	UpdateMovementStraightSimple()
+	D5 = 0
+	if (objA0.flags2a & object.flag.P1_ON_OBJECT)
+	{
+		D5.u8 = control.player1.state
+	}
+	if (objA0.flags2a & object.flag.P2_ON_OBJECT)
+	{
+		D5.u8 |= control.tails.state
+	}
+	// P3 input for barrel push
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.flags2a & 0x20)
+		{
+			D5.u8 |= control.knuckles3.state
+		}
+		objA0.flags2a &= ~0x20
+	}
+
+	s16 offset = objA0.position.y.u16 - u16[A0 + 0x30]
+	if (offset == 0)
+	{
+		if (abs(objA0.velocity.y) < 0x80)
+		{
+			objA0.velocity.y = 0
+		}
+
+	#if STANDALONE
+		if (abs(objA0.velocity.y) < 0x400)
+		{
+			if ((D5 & CONTROL_UP) && objA0.velocity.y <= 0)
+			{
+				objA0.velocity.y = -0x400
+			}
+			else if ((D5 & CONTROL_DOWN) && objA0.velocity.y >= 0)
+			{
+				objA0.velocity.y = 0x400
+			}
+		}
+	#endif
+	}
+	else if (offset < 0)
+	{
+		if (objA0.velocity.y >= objA0.value3e)
+			return
+
+		objA0.velocity.y += 0x20
+		if (objA0.velocity.y >= 0)
+		{
+			if (D5 & CONTROL_DOWN)
+			{
+			#if STANDALONE
+				objA0.velocity.y += 0x28
+			#else
+				objA0.velocity.y += 0x20
+			#endif
+			}
+		}
+		else
+		{
+			objA0.velocity.y += 0x10
+		}
+	}
+	else
+	{
+		if (objA0.velocity.y <= -s16(objA0.value3e))
+			return
+
+		objA0.velocity.y -= 0x20
+		if (objA0.velocity.y < 0)
+		{
+			if (D5 & CONTROL_UP)
+			{
+			#if STANDALONE
+				objA0.velocity.y -= 0x28
+			#else
+				objA0.velocity.y -= 0x20
+			#endif
+			}
+		}
+		else
+		{
+			objA0.velocity.y -= 0x10
+		}
+	}
+}
+
+
+//=============================================================
+// MHZ Mushroom bounce
+//=============================================================
+// MushroomHead.Update checks P1 (D6=3, D5=0x30) and P2
+// (D6=4, D5=0x32) for bounce. D5 is an offset for a
+// velocity-y backup. P3 uses D5=0x34 (verified free).
+
+function void MushroomHead.Update()
+{
+	Object.animationUpdate(0x03e1da)
+	if (objA0.base_state != 0)
+	{
+		objA0.state.both = 0
+		objA0.animation.frame = 0
+		objA0.base_state = 0
+	}
+
+	fn03e0de()
+
+	D1.u16 = 0x18
+	D3 = objA0.animation.sprite
+	D3.u8 = u8[0x03e0da + D3.u16]
+	D4.u16 = objA0.position.x.u16
+	PlatformCheckClimbOn()
+
+	A1 = 0xffffb000
+	D5 = 0x30
+	D6 = 3		// object.flag.P1_ON_OBJECT
+	fn03e172()
+
+	A1 = 0xffffb04a
+	D5 = 0x32
+	D6 = 4		// object.flag.P2_ON_OBJECT
+	fn03e172()
+
+	// P3 -- uses D5=0x34 (free in mushroom object)
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D5 = 0x34
+		D6 = 5
+		fn03e172()
+		objA0.flags2a &= ~0x20
+	}
+
+	DrawOrUnloadObject()
+}
+
+
+//=============================================================
+// SOZ Quicksand
+//=============================================================
+// fn0400ca iterates P1/P2 for quicksand sink/jump.
+// Uses D6 bit on flags2a for on-object tracking --
+// no per-player state block. Add P3 (D6=5).
+
+//# address-hook(0x0400ca)
+function void fn0400ca()
+{
+	D2.u16 = u16[A0 + 0x30]
+	D3.u16 = objA0.value32
+
+	A1 = 0xffffb000
+	D6 = 3		// object.flag.P1_ON_OBJECT
+	D5.u16 = control.player1
+	fn0400f0()
+
+	A1 = 0xffffb04a
+	D6 = 4		// object.flag.P2_ON_OBJECT
+	D5.u16 = control.tails
+	fn0400f0()
+
+	// P3
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		D6 = 5
+		D5.u16 = control.knuckles3
+		fn0400f0()
+		objA0.flags2a &= ~0x20
+	}
+
+	CheckForUnloadObject()
+}
+
+
+//=============================================================
+// DEZ Gravity Switch
+//=============================================================
+// fn048ad6 calls fn01dc56 (which runs P3 via our override),
+// then checks D6 bits to apply gravity flip via fn048b40.
+// fn048b40 is stateless. Add P3 with D3=0x20 (bit 5 mask).
+//
+// D6 bit math after swap: P1 climb=bit4, P2 climb=bit5,
+// P3 climb=bit6 (0x40). Original check 0x14 catches P1
+// climb (0x10) + P1 bonk (0x04). Extend to 0x54 to also
+// catch P3 climb-on (0x40).
+
+//# address-hook(0x048ad6)
+function void fn048ad6()
+{
+	D1.u16 = 0x1b
+	D2.u16 = 0x08
+	D3.u16 = 0x09
+	D4.u16 = objA0.position.x.u16
+	fn01dc56()
+
+	D6 = (D6 << 16) + (D6 >> 16)
+	u16 triggerMask = useSonicTailsAndKnuckles ? 0x54 : 0x14
+	if (D6.u16 & triggerMask)
+	{
+		objA0.animation.sprite = 1
+		objA0.update_address = 0x048b7e
+		u16[A0 + 0x30] = 3
+
+		D0 = (objA0.render_flags & render_flag.FLIP_Y) ? -8 : 8
+		objA0.position.y.u16 += D0
+
+		A1 = 0xffffb000
+		D2.u16 = D6.u16
+		D3.u16 = 0x14
+		fn048b40()
+
+		A1 = 0xffffb04a
+		D2.u16 = D6.u16
+		D3.u16 = 0x28
+		fn048b40()
+
+		// P3 -- climb-on bit after swap = 0x40
+		if (useSonicTailsAndKnuckles)
+		{
+			A1 = P3_ADDR
+			D2.u16 = D6.u16
+			D3.u16 = 0x40
+			fn048b40()
+			objA0.flags2a &= ~0x20
+		}
+
+		playSound(0x73)
+	}
+
+	DrawOrUnloadObject()
+}
+
+
+//=============================================================
+// DEZ Conveyor Belt
+//=============================================================
+// fn047842 iterates P1/P2 for conveyor push. fn047854 is
+// completely stateless (proximity check + position offset).
+// Add P3.
+
+//# address-hook(0x047842)
+function void fn047842()
+{
+	A1 = 0xffffb000
+	fn047854()
+
+	A1 = 0xffffb04a
+	fn047854()
+
+	// P3
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = P3_ADDR
+		fn047854()
+	}
+
+	CheckForUnloadObject()
+}
+
+
+
+//=============================================================
+//=============================================================
+//                                                           //
+//  P3 STATE POOL OVERRIDES                                  //
+//                                                           //
+//  The following objects store per-player state inside the   //
+//  0x4A-byte object slot and have no room for P3. They use  //
+//  P3State.Find() to get an 8-byte data area in shared      //
+//  memory (0x818500-0x8185FF) keyed by object address.      //
+//                                                           //
+//=============================================================
+//=============================================================
+
+
+//=============================================================
+// AIZ Zipline -- base segment player interaction
+//=============================================================
+// AIZZipLine.BaseUpdate iterates P1 (A2=A0+0x32) and P2
+// (A2=A0+0x33) via fn0220c2. Per-player state:
+//   A2[0]: u8 grab state (0=not attached, 1=hanging, <0=detaching)
+//   A2[2]: u8 cooldown timer (counts down after detach)
+// P3 pool layout: [0]=grab_state, [1]=unused, [2]=cooldown
+//
+// We override AIZZipLine.BaseUpdate to add a P3 pass using
+// the pool instead of object offsets.
+
+function void AIZZipLine.BaseUpdate()
+{
+	D4.u16 = objA0.position.x.u16
+	D5.u16 = objA0.position.y.u16
+	fn022040()
+
+	if (D4.u16 != objA0.position.x.u16)
+	{
+		u16[A0 + 0x42] = D4.u16
+	}
+	if (D5.u16 != objA0.position.y.u16)
+	{
+		u16[A0 + 0x44] = D5.u16
+	}
+
+	// P1
+	A1 = 0xffffb000
+	A2 = A0 + 0x32
+	D0.u16 = control.player1
+	fn0220c2()
+
+	// P2
+	A1 = 0xffffb04a
+	A2 += 1
+	D0.u16 = control.tails
+	fn0220c2()
+
+	// P3 -- use state pool
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 stateAddr = P3State.Find()
+		if (stateAddr != 0)
+		{
+			A1 = P3_ADDR
+			A2 = stateAddr
+			D0.u16 = control.knuckles3
+			fn0220c2()
+		}
+	}
+
+	if (u16[A0 + 0x32] == 0 || u16[A0 + 0x30] == 0)
+	{
+		DrawObject()
+	}
+}
+
+
+//=============================================================
+// HCZ Conveyor Belt
+//=============================================================
+// fn0311c4 iterates P1 (A2=A0+0x32) and P2 (A2=A0+0x33)
+// via fn031226. The state bytes are interleaved:
+//   A2[0]:   u8 grab state
+//   A2[2]:   u8 cooldown timer
+//   A2[4]:   u8 rotation angle
+//   A2[6]:   u8 movement counter
+//   A2[8]:   u8 animation offset
+// P3 pool layout: [0]=grab, [1]=cooldown, [2]=angle,
+//                  [3]=counter, [4]=anim_offset
+//
+// fn031226 uses A2 with specific offsets (+0, +2, +4, +6, +8)
+// that match the interleaved P1/P2 layout but NOT a contiguous
+// block. We must rewrite fn031226's logic for P3 using direct
+// pool accesses.
+
+//# address-hook(0x0311c4)
+function void fn0311c4()
+{
+	// P1
+	A2 = A0 + 0x32
+	A1 = 0xffffb000
+	D1.u16 = control.player1
+	D2 = 0
+	fn031226()
+
+	// P2
+	++A2
+	A1 = 0xffffb04a
+	D1.u16 = control.tails
+	D2 = 1
+	fn031226()
+
+	// P3
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 stateAddr = P3State.Find()
+		if (stateAddr != 0)
+		{
+			A1 = P3_ADDR
+			D1.u16 = control.knuckles3
+			D2 = 2
+			HCZConveyor.P3Update(stateAddr)
+		}
+	}
+
+	// Despawn check (same as base)
+	D1.u16 = level.despawn_position.x
+	D0.u16 = (u16[A0 + 0x3c] & 0xff80) - 0x0280
+	if (D1.u16 >= D0.u16)
+	{
+		D0.u16 = objA0.value3e & 0xff80
+		if (D1.u16 <= D0.u16)
+			return
+	}
+
+	u8[0xffffcfe0 + objA0.subtype2c] = 0
+
+	if (objA0.respawn_entry)
+	{
+		A2 = 0xffff0000 + objA0.respawn_entry
+		u8[A2] &= ~0x80
+	}
+	UnloadObject()
+}
+
+// P3-specific conveyor belt interaction using pool state.
+// Mirrors fn031226 but reads/writes pool bytes contiguously:
+//   pool[0] = grab state       (was A2[0])
+//   pool[1] = cooldown timer   (was A2[2])
+//   pool[2] = rotation angle   (was A2[4])
+//   pool[3] = movement counter (was A2[6])
+//   pool[4] = anim offset      (was A2[8])
+function void HCZConveyor.P3Update(u32 pool)
+{
+	if (u8[pool] != 0)
+	{
+		if (debug_mode.state == 0 && u8[A1 + 0x05] < base_state.HURT)
+		{
+			if (D1 & 0x0400)		// CONTROL_LEFT held
+			{
+				--objA1.position.x.u16
+				--u8[pool + 3]
+				if (s8[pool + 3] < 0)
+				{
+					u8[pool + 3] = 0x07
+					u8[pool + 4] += 0x10
+					u8[pool + 4] &= 0x10
+				}
+			}
+
+			if (D1 & 0x0800)		// CONTROL_RIGHT held
+			{
+				++objA1.position.x.u16
+				--u8[pool + 3]
+				if (s8[pool + 3] < 0)
+				{
+					u8[pool + 3] = 0x07
+					u8[pool + 4] += 0x10
+					u8[pool + 4] &= 0x10
+				}
+			}
+
+			// Check if jump button pressed
+			D1.u16 &= CONTROL_ABC
+			if (D1.u16 == 0)
+			{
+				D0 = 0x02
+				if (objA0.flags2a & 0x01)
+				{
+					D0.s16 = -D0.s16
+				}
+				objA1.position.x.u16 += D0.u16
+				D0.u16 = objA1.position.x.u16
+				if (D0.u16 >= u16[A0 + 0x40] && D0.u16 < objA0.value42)
+				{
+					HCZConveyor.P3AnimUpdate(pool)
+					D0 = objA1.animation.sprite
+					u32 backupA2 = A2
+					SetCharacterSpritePatterns()
+					A2 = backupA2
+					return
+				}
+			}
+			else
+			{
+				objA1.velocity.y = (u8[A1 + 0x2a] & char.flag.UNDERWATER) ? -0x200 : -0x500
+			}
+		}
+
+		u8[pool] = 0
+		u8[pool + 1] = (u8[A1 + 0x2a] & char.flag.UNDERWATER) ? 0x5a : 0x3c
+
+		objA1.hitbox_extends.x = char.hitbox.x.ROLLING
+		objA1.hitbox_extends.y = char.hitbox.y.ROLLING
+		objA1.state = char.state.ROLLING
+		u8[A1 + 0x27] = 0
+		objA1.flags2a |= (char.flag.IN_AIR | char.flag.ROLLING)
+		objA1.flags2a &= ~char.flag.CONTROL_LOCK
+		u8[A1 + 0x2e] &= ~(control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+		u8[A1 + 0x40] = 0x01
+		return
+	}
+
+	if (u8[pool + 1] != 0)
+	{
+		--u8[pool + 1]
+		return
+	}
+
+	D0.u16 = objA1.position.x.u16
+	if (D0.u16 >= u16[A0 + 0x40] && D0.u16 < objA0.value42)
+	{
+		bool upperBelt = (u16[A1 + 0x1c] == 1)
+		u16 py = objA0.position.y.u16 + (upperBelt ? -0x14 : 0x14)
+
+		if (objA1.position.y.u16 > py && objA1.position.y.u16 <= py + 0x10)
+		{
+			if (debug_mode.state == 0 && u8[A1 + 0x05] < base_state.HURT && u8[A1 + 0x2e] == 0)
+			{
+				if (upperBelt)
+				{
+					objA1.position.y.u16 = objA0.position.y.u16 - 0x14
+					objA1.animation.sprite = 0x65
+					u8[pool + 2] = 0x80
+				}
+				else
+				{
+					if (objA1.velocity.y < 0)
+						return
+
+					objA1.animation.sprite = 0x63
+					u8[pool + 2] = 0
+				}
+
+				objA1.render_flags &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+				objA1.position.y.u16 = py
+				objA1.velocity.x = 0
+				objA1.velocity.y = 0
+				objA1.groundspeed = 0
+				u8[A1 + 0x20] = 0
+				u8[A1 + 0x2e] = 3
+
+				u8[pool + 3] = 0
+				u8[pool + 4] = 0
+				u8[pool] = 1
+
+				D0 = objA1.animation.sprite
+				u32 backupA2 = A2
+				SetCharacterSpritePatterns()
+				A2 = backupA2
+			}
+		}
+	}
+}
+
+// Mirrors fn03145a for P3 using pool state.
+// pool[2] = rotation angle (was A2[4])
+// pool[4] = anim offset (was A2[8])
+function void HCZConveyor.P3AnimUpdate(u32 pool)
+{
+	if (u16[A1 + 0x1c] == 0)
+	{
+		D0.u8 = u8[pool + 2]
+		if (D0.u8 != 0)
+		{
+			if (D0.s8 < 0)
+			{
+				D0.u8 += 6
+				if (D0.s8 > 0)
+					D0 = 0
+			}
+			else
+			{
+				D0.u8 -= 6
+				if (D0.s8 < 0)
+					D0 = 0
+			}
+			u8[pool + 2] = D0.u8
+		}
+	}
+	else
+	{
+		u16[A1 + 0x1c] = 0
+		D0.u8 = u8[pool + 2] - 0x80
+		if (D0.u8 != 0)
+		{
+			if (D0.s8 < 0)
+			{
+				D0.u8 += 6
+				if (D0.s8 > 0)
+					D0 = 0
+			}
+			else
+			{
+				D0.u8 -= 6
+				if (D0.s8 < 0)
+					D0 = 0
+			}
+			u8[pool + 2] = D0.u8 + 0x80
+		}
+	}
+
+	D0 = (u8[pool + 2] >> 4) + u8[pool + 4]
+	objA1.animation.sprite = u8[0x0314d2 + D0.u16]
+	D0.u16 &= 0x0f
+	objA1.position.y.u16 = objA0.position.y.u16 + s8[0x0314f2 + D0.u16]
+}
+
+
+//=============================================================
+// CNZ Cannon
+//=============================================================
+// fn0318f2 iterates P1 (A2=A0+0x30) and P2 (A2=A0+0x31)
+// via fn0319f4. Per-player state:
+//   A2[0]: u8 state (0=outside, 1=falling in, 2=inside, 3=shot)
+//   A2[2]: u8 timer (countdown after shooting)
+// P3 pool layout: [0]=state, [1]=timer
+//
+// fn0319f4 uses A2[0] and A2[2] with a 1-byte gap.
+// We rewrite the per-player interaction for P3 using pool.
+
+//# address-hook(0x0318f2)
+function void fn0318f2()
+{
+	fn03192c()
+
+	// P1
+	A2 = A0 + 0x30
+	A1 = 0xffffb000
+	D6 = 3		// object.flag.P1_ON_OBJECT
+	D1.u16 = control.player1
+	fn0319f4()
+
+	// P2
+	++A2
+	A1 = 0xffffb04a
+	D6 = 4		// object.flag.P2_ON_OBJECT
+	D1.u16 = control.tails
+	if (tails.ai_routine == 0x02)
+	{
+		u8[A2] = 0
+	}
+	fn0319f4()
+
+	// P3
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 stateAddr = P3State.Find()
+		if (stateAddr != 0)
+		{
+			A1 = P3_ADDR
+			D6 = 5
+			D1.u16 = control.knuckles3
+			CNZCannon.P3Update(stateAddr)
+			objA0.flags2a &= ~0x20
+		}
+	}
+
+	fn031b18()
+	DrawOrUnloadObject()
+}
+
+// P3-specific cannon interaction using pool state.
+// pool[0] = state (was A2[0])
+// pool[1] = timer (was A2[2])
+function void CNZCannon.P3Update(u32 pool)
+{
+#if STANDALONE
+	if (A1 == 0xffffb04a && tails.carrying)
+		return
+	if (u8[A1 + 0x05] != base_state.NORMAL)
+		return
+#endif
+
+	u8 bit = (1 << D6.u8)
+
+	if (u8[pool] == 0)
+	{
+		if (objA0.flags2a & bit)
+		{
+			objA0.flags2a &= ~bit
+			objA1.sprite_priority = 0x0380
+			objA1.position.x.u16 = objA0.position.x.u16
+			objA1.velocity.x = 0
+			objA1.velocity.y = 0
+			objA1.groundspeed = 0
+			objA1.hitbox_extends.x = char.hitbox.x.ROLLING
+			objA1.hitbox_extends.y = char.hitbox.y.ROLLING
+			objA1.state = char.state.ROLLING
+			objA1.flags2a |= (char.flag.IN_AIR | char.flag.ROLLING)
+			objA1.flags2a &= ~char.flag.ON_OBJECT
+			u8[A1 + 0x2e] = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+
+			u8[pool] = 1
+
+		#if STANDALONE
+			if (tails.carrying)
+			{
+				tails.carrying = 0
+			}
+		#endif
+		}
+	}
+	else if (u8[pool] == 1)
+	{
+		D0.u16 = objA1.velocity.y
+		objA1.velocity.y += 0x38
+		D0.s32 = s32(D0.s16) << 8
+		objA1.position.y += D0
+		if (objA1.position.y.u16 > objA0.position.y.u16)
+		{
+			objA1.position.y.u16 = objA0.position.y.u16
+			objA1.state = char.state.DISAPPEARED
+
+			u8[pool] = 2
+		}
+	}
+	else if (u8[pool] == 2)
+	{
+		if (u16[A0 + 0x34] != 2)
+		{
+			if (u16[A0 + 0x30] == 0x0200 || u16[A0 + 0x30] == 0x0202)
+			{
+				u16[A0 + 0x34] = 1
+			}
+
+			if ((D1.u16 & CONTROL_ABC) == 0)
+				return
+		}
+
+		// Shoot now
+		D0.u8 = 0x80 + objA0.compound.sprite1.animation.sprite * 0x10
+		LookupSinCos()
+		D1.s16 <<= 4
+		D0.s16 <<= 4
+
+		objA1.velocity.x = D1.s16
+		objA1.velocity.y = D0.s16
+		objA1.groundspeed = D1.s16
+		objA1.position.x.u16 = objA0.position.x.u16
+		objA1.position.y.u16 = objA0.position.y.u16 - 0x18
+		objA1.state = char.state.ROLLING
+		objA1.flags2a |= char.flag.IN_AIR
+		u8[A1 + 0x2e] = 0
+		u8[A1 + 0x40] = 0
+
+		u16[A0 + 0x34] = 2
+		u16[A0 + 0x36] = 0x0f
+
+		u8[pool] = 3
+		u8[pool + 1] = 0x08
+
+		#if STANDALONE
+			playSound(0x81)
+		#endif
+	}
+	else
+	{
+		--u8[pool + 1]
+		if (u8[pool + 1] == 0)
+		{
+			objA1.sprite_priority = 0x0100
+			u8[pool] = 0
+		}
+	}
+}
+
+
+//=============================================================
+// CNZ Barrel -- ride state (spinning on barrel)
+//=============================================================
+// fn0324c0 is called for P1 (A2=A0+0x32, 4 bytes) and P2
+// (A2=A0+0x36, 4 bytes). Per-player state:
+//   A2[0]: u8 state (0=not riding, 1=riding)
+//   A2[1]: u8 rotation angle
+//   A2[2]: u8 x-offset magnitude
+//   A2[3]: u8 sprite priority threshold
+// Note: fn032208 (weight/push) is already overridden above.
+//
+// CNZBarrel.Update calls fn0324c0 for P1 then P2 with A2
+// pointing into the object slot. We override CNZBarrel.Update
+// to add a P3 pass using pool state.
+
+// CNZBarrel.Update is already overridden in objects_overrides.lemon
+// for the CNZ Act 1 barrel removal guard. We chain another override
+// here: base.CNZBarrel.Update() resolves to the objects_overrides
+// version, which calls the original. After that returns, P1/P2
+// ride checks are done and we add P3's ride check using pool state.
+
+function void CNZBarrel.Update()
+{
+	// Chain through existing override (handles CNZ1 barrel removal)
+	base.CNZBarrel.Update()
+
+	// After base has processed P1/P2 ride state, add P3
+	if (useSonicTailsAndKnuckles)
+	{
+		// Guard: if the object was unloaded by base, skip
+		if (objA0.update_address == 0)
+			return
+
+		u32 stateAddr = P3State.Find()
+		if (stateAddr != 0)
+		{
+			A1 = P3_ADDR
+			D6 = 5
+			D5.u16 = control.knuckles3
+			CNZBarrel.P3RideUpdate(stateAddr)
+			objA0.flags2a &= ~0x20
+		}
+	}
+}
+
+// P3-specific barrel ride interaction using pool state.
+// pool[0] = state      (was A2[0])
+// pool[1] = rotation   (was A2[1])
+// pool[2] = x_offset   (was A2[2])
+// pool[3] = sprite_pri (was A2[3])
+function void CNZBarrel.P3RideUpdate(u32 pool)
+{
+#if STANDALONE
+	if (debug_mode.state)
+		return
+#endif
+
+	u8 bit = (1 << D6.u8)
+
+	D0.u8 = u8[pool]
+	if (D0.u8 == 0)
+	{
+		if (objA0.flags2a & bit)
+		{
+			u8[pool + 1] = 0
+			D0.u16 = objA1.position.x.u16 - objA0.position.x.u16
+			if (D0.s16 < 0)
+			{
+				D0.s16 = -D0.s16
+				u8[pool + 1] = 0x80
+			}
+
+			u8[pool] = 1
+			u8[pool + 2] = D0.u8
+
+			objA1.velocity.x = 0
+			objA1.velocity.y = 0
+			objA1.groundspeed = 0
+			u8[A1 + 0x1e] = u8[A1 + 0x44]
+			u8[A1 + 0x1f] = u8[A1 + 0x45]
+			objA1.flags2a &= ~(char.flag.ROLLING | char.flag.IN_AIR | char.flag.PUSHING | char.flag.CONTROL_LOCK)
+			objA1.state = char.state.RUNNING
+			u8[A1 + 0x2e] = 3
+			u8[A1 + 0x40] = 0
+
+		#if STANDALONE
+			u8[A1 + 0x3d] = 0
+		#endif
+
+			CNZBarrel.P3SpriteUpdate(pool)
+		}
+		return
+	}
+
+	if ((objA1.render_flags & render_flag.VISIBLE) && u8[A1 + 0x05] < base_state.HURT)
+	{
+		if ((objA0.flags2a & bit) == 0)
+		{
+			u8[pool] = 0
+			return
+		}
+
+		D0 = u8[pool + 1]
+		LookupSinCos()
+		D0.u16 = (D0.s16 + 0x0100) >> 2
+		u8[pool + 3] = D0.u8
+
+		D2 = u16[pool + 2]
+		D1.s32 = s32(D1.s16) * D2.s16
+		D1 >>= 16
+		D1.u16 += objA0.position.x.u16
+		objA1.position.x.u16 = D1.u16
+		u8[pool + 1] += 2
+		D0.u8 = u8[A0 + 0x35]
+		objA1.sprite_priority = (D0.u8 > u8[pool + 3]) ? 0x80 : 0x100
+
+		objA1.groundspeed = 0
+		D0.s16 = abs(objA0.velocity.y)
+		if ((u8[A1 + 0x2a] & char.flag.IN_AIR) == 0 && D0.u16 >= 0x0480)
+		{
+			objA1.groundspeed = 0x800
+		}
+
+		// Check if jump button pressed
+		if ((D5.u8 & CONTROL_ABC) == 0)
+		{
+			CNZBarrel.P3SpriteUpdate(pool)
+			return
+		}
+
+		// Jump off
+		objA1.velocity.y = objA0.velocity.y - 0x680
+		objA1.velocity.x = 0
+		objA1.groundspeed = 0
+		objA1.hitbox_extends.x = char.hitbox.x.ROLLING
+		objA1.hitbox_extends.y = char.hitbox.y.ROLLING
+		objA1.state = char.state.ROLLING
+		objA1.flags2a |= char.flag.ROLLING
+		u8[A1 + 0x40] = 0x01
+
+	#if STANDALONE
+		playSound(SFX_JUMP)
+	#endif
+	}
+
+	objA1.flags2a |= char.flag.IN_AIR
+	objA1.sprite_priority = 0x0100
+	u8[A1 + 0x2e] = 0
+	u8[pool] = 0
+}
+
+// Mirrors fn03260a/fn032610 for P3 pool state
+function void CNZBarrel.P3SpriteUpdate(u32 pool)
+{
+	D0 = u8[pool + 1]
+	D0.u8 += 0x0b
+	D0.u16 = D0 / 0x16
+	objA1.animation.sprite = u8[0x03263e + D0.u16]
+	objA1.render_flags &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+	objA1.render_flags |= u8[0x03264a + D0.u16]
+	D0 = u8[A1 + 0x22]
+
+	u32 backupA2 = A2
+	SetCharacterSpritePatterns()
+	A2 = backupA2
+}
+
+
+//=============================================================
+// LBZ Tube Transport
+//=============================================================
+// fn029d4a iterates P1 (A2=A0+0x38) and P2 (A2=A0+0x39)
+// via fn02a106. Per-player state is just 1 byte:
+//   A2[0]: u8 state (0=not in, 2=entering, 4=exiting)
+// P3 pool layout: [0]=state
+//
+// fn02a106 is called from fn029d4a (start point update).
+// The tube has a complex 7-state object state machine at
+// fn029e22 using A4=A0+0x2e. The per-player part fn02a106
+// only uses A2[0]. We add P3 using pool.
+//
+// IMPORTANT: fn02a106 checks if the player steps onto the
+// tube platform via fn01de20 (which we override for P3).
+// The on-object detection uses bit 5 for P3. fn02a106 also
+// checks A2-1 (previous player's state) for P2 -- this is
+// to prevent P2 from entering if P1 hasn't entered yet.
+// For P3 we use the same logic but check P2's state (A0+0x39).
+
+//# address-hook(0x029d4a)
+function void fn029d4a()
+{
+	fn029e22()
+
+	// P1
+	A1 = 0xffffb000
+	A2 = A0 + 0x38
+	fn02a106()
+
+	// P2
+	A1 = 0xffffb04a
+	++A2
+	fn02a106()
+
+	// P3
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 stateAddr = P3State.Find()
+		if (stateAddr != 0)
+		{
+			A1 = P3_ADDR
+			LBZTube.P3Update(stateAddr)
+		}
+	}
+
+	DrawOrUnloadObject()
+}
+
+// P3-specific tube transport interaction.
+// pool[0] = state (mirrors A2[0] in fn02a106)
+function void LBZTube.P3Update(u32 pool)
+{
+	D0.u8 = u8[pool]
+	if (D0.u8 == 0)
+	{
+		if (debug_mode.state != 0)
+			return
+
+		// P3 enters via proximity check (no shortcut entry like P2)
+		D0.u16 = objA1.position.x.u16 - objA0.position.x.u16 + 3
+		if (objA0.flags2a & 0x01)
+			D0.u16 += 0x0a
+		if (D0.u16 >= 0x10)
+			return
+
+		D1.u16 = objA1.position.y.u16 - objA0.position.y.u16 + 0x20
+		if (D1.u16 >= 0x40)
+			return
+
+		if (u8[A1 + 0x2e] != 0 || (objA1.flags2a & char.flag.IN_AIR) != 0)
+			return
+
+		u8[pool] += 2
+		u8[A1 + 0x2e] = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+		u8[A1 + 0x20] = 0
+		u8[A1 + 0x40] = 0
+		objA1.velocity.x = 0
+		objA1.velocity.y = 0
+		objA1.groundspeed = 0
+		objA1.flags2a &= ~(char.flag.PUSHING | char.flag.IN_AIR)
+		objA1.position.x.u16 = objA0.position.x.u16
+		objA1.position.y.u16 = objA0.position.y.u16 + 0x18 - u8[A1 + 0x1e]
+	#if STANDALONE
+		objA1.flags2a |= char.flag.ON_OBJECT
+		u16[A1 + 0x42] = A0.u16
+	#endif
+
+		objA0.flags2a &= ~0x20
+	}
+	else
+	{
+		D0.u8 -= 2
+		if (D0.u8 != 0)
+			return
+
+		objA1.position.x.u16 = objA0.position.x.u16
+		D0.u16 = objA0.position.y.u16 + 0x18
+		D1 = u8[A1 + 0x1e]
+		D0.u16 -= D1.u16
+		objA1.position.y.u16 = D0.u16
+		if (objA0.flags2e == 0x08)
+		{
+			objA1.flags2a |= char.flag.FACING_LEFT
+			u8[A1 + 0x2e] = 0
+			u8[pool] += 2
+		}
+
+	#if STANDALONE
+		if (!debug_mode.state)
+	#endif
+		{
+			D0 = objA0.value26
+			objA1.animation.sprite = u8[0x02a218 + D0.u16]
+			objA1.render_flags &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+			D0.u8 = u8[0x02a224 + D0.u16]
+			objA1.render_flags |= D0.u8
+			D0 = objA1.animation.sprite
+
+			u32 backupA2 = A2
+			SetCharacterSpritePatterns()
+			A2 = backupA2
+		}
+	}
+}
+
+
+//=============================================================
+// SOZ Zipline -- base segment player interaction
+//=============================================================
+// fn04af0a iterates P1 (A2=A0+0x38) and P2 (A2=A0+0x39)
+// via fn04af80. Per-player state:
+//   A2[0]: u8 grab state (0=not attached, 1=hanging, <0=detaching)
+//   A2[2]: u8 cooldown timer
+// P3 pool layout: [0]=grab_state, [1]=unused, [2]=cooldown
+//
+// Very similar to AIZ Zipline. fn04af80 uses A2[0], A2[2].
+// A3 points to the root zip line object for rotation state.
+
+//# address-hook(0x04af0a)
+function void fn04af0a()
+{
+	D4.u16 = objA0.position.x.u16
+	D5.u16 = objA0.position.y.u16
+	A1 = 0xffff0000 + objA0.value42
+	fn04aee0()
+
+	if (D4.u16 != objA0.position.x.u16)
+	{
+		objA0.value3e = D4.u16
+	}
+	if (D5.u16 != objA0.position.y.u16)
+	{
+		u16[A0 + 0x40] = D5.u16
+	}
+
+	A3 = 0xffff0000 + u16[A0 + 0x46]
+
+	// P1
+	A2 = A0 + 0x38
+	A1 = 0xffffb000
+	D0.u16 = control.player1
+	fn04af80()
+
+	// P2
+	A1 = 0xffffb04a
+	++A2
+	D0.u16 = control.tails
+	fn04af80()
+
+	// P3 -- use state pool
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 stateAddr = P3State.Find()
+		if (stateAddr != 0)
+		{
+			A1 = P3_ADDR
+			D0.u16 = control.knuckles3
+			SOZZipline.P3Update(stateAddr)
+		}
+	}
+
+	if (u16[A3 + 0x2e] == 3)
+	{
+		D0 = u8(u8[A3 + 0x37] + 4) >> 4
+		objA0.animation.sprite = u8[0x04af70 + D0.u16]
+	}
+	else
+	{
+		objA0.animation.sprite = 0x21
+	}
+
+	DrawObject()
+}
+
+// P3-specific SOZ zipline interaction using pool state.
+// pool[0] = grab state (was A2[0])
+// pool[2] = cooldown   (was A2[2])
+// A3 = root zip line object (already set by caller)
+function void SOZZipline.P3Update(u32 pool)
+{
+	if (u8[pool] == 0)
+	{
+		SOZZipline.P3ProximityCheck(pool)
+		return
+	}
+
+	if (s8[pool] > 0)
+	{
+		if ((objA1.render_flags & render_flag.VISIBLE) && u8[A1 + 0x05] < base_state.HURT && debug_mode.state == 0)
+		{
+			if (u16[A3 + 0x2e] != 0x02 || (D0.u8 & 0x70) == 0)
+			{
+				objA1.position.x.u16 = objA0.position.x.u16
+				objA1.position.y.u16 = objA0.position.y.u16 + 0x14
+				objA1.state = char.state.HANGING
+
+				D0.u16 = u16[A3 + 0x2e]
+				if (D0.u16 == 0)
+				{
+					objA1.animation.sprite = 0x92
+				}
+				else
+				{
+					if (D0.u16 != 1)
+					{
+						SOZZipline.P3HangAnim3(pool)
+						return
+					}
+
+					D0 = u8(u8[A3 + 0x26] * 2 + 8) >> 4
+					objA1.animation.sprite = u8[0x04b0a0 + D0.u16]
+				}
+
+				SOZZipline.P3SetSprite()
+			}
+			else
+			{
+				u8[A1 + 0x2e] = 0
+				u8[pool] = 0
+
+				objA1.velocity.x = (objA0.position.x.u16 - objA0.value3e) << 8
+				objA1.velocity.y = (objA0.position.y.u16 - u16[A0 + 0x40]) << 8
+
+				u8[pool + 2] = 0x3c
+				if (D0 & 0x0800)
+				{
+					objA1.velocity.x = 0x200
+				}
+				else if (D0 & 0x0400)
+				{
+					objA1.velocity.x = -0x200
+				}
+				objA1.velocity.y -= 0x380
+				u8[A1 + 0x2a] |= char.flag.IN_AIR
+				u8[A1 + 0x40] = 1
+				objA1.hitbox_extends.x = char.hitbox.x.ROLLING
+				objA1.hitbox_extends.y = char.hitbox.y.ROLLING
+				objA1.state = char.state.ROLLING
+				u8[A1 + 0x2a] |= char.flag.ROLLING
+
+				playSound(SFX_JUMP)
+			}
+			return
+		}
+	}
+	else
+	{
+		objA1.velocity.x = 0x0300
+		objA1.velocity.y = 0x0200
+		u8[A1 + 0x2a] |= char.flag.IN_AIR
+	}
+
+	u8[A1 + 0x2e] = 0
+	u8[pool] = 0
+	u8[pool + 2] = 0x3c
+}
+
+// Mirrors fn04b0b0 (hang state 2) for P3
+function void SOZZipline.P3HangAnim3(u32 pool)
+{
+	D0.u16 = u16[A3 + 0x2e]
+	if (D0.u16 != 2)
+	{
+		// State 3: turning
+		u8[A1 + 0x20] = 0
+		D0 = u8(u8[A3 + 0x37] + 4) >> 4
+		objA1.animation.sprite = u8[0x04b110 + D0.u16]
+		D0.u8 = u8[0x04b120 + D0.u16]
+
+		objA1.render_flags = (objA1.render_flags & ~(render_flag.FLIP_X | render_flag.FLIP_Y)) | D0.u8
+		u8[A1 + 0x2a] = (u8[A1 + 0x2a] & ~(char.flag.FACING_LEFT | char.flag.IN_AIR)) | D0.u8
+
+		SOZZipline.P3SetSprite()
+		return
+	}
+
+	objA1.state = char.state.HANGING
+	D0 = u8(u8[A3 + 0x26] + 8) >> 4
+	objA1.animation.sprite = u8[0x04b0ce + D0.u16]
+
+	SOZZipline.P3SetSprite()
+}
+
+function void SOZZipline.P3SetSprite()
+{
+	D0 = objA1.animation.sprite
+	u32 backupA2 = A2
+	SetCharacterSpritePatterns()
+	A2 = backupA2
+}
+
+// Mirrors fn04b130 for P3 proximity check
+function void SOZZipline.P3ProximityCheck(u32 pool)
+{
+	if (u8[pool + 2] != 0)
+	{
+		--u8[pool + 2]
+		if (u8[pool + 2] != 0)
+			return
+	}
+
+	D0.u16 = objA1.position.x.u16 - objA0.position.x.u16 + 0x10
+	D1.u16 = objA1.position.y.u16 - objA0.position.y.u16
+	if (D0.u16 < 0x20 && D1.u16 < 0x18)
+	{
+		if (u8[A1 + 0x2e] == 0 && u8[A1 + 0x05] < base_state.HURT && debug_mode.state == 0)
+		{
+			objA1.render_flags &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+			objA1.velocity.x = 0
+			objA1.velocity.y = 0
+			objA1.groundspeed = 0
+			objA1.position.x.u16 = objA0.position.x.u16
+			objA1.position.y.u16 = objA0.position.y.u16 + 0x14
+			objA1.state = char.state.HANGING
+			u8[A1 + 0x2e] = (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+			u8[A1 + 0x3d] = 0
+
+			D0.u8 = u8[A3 + 0x2a] & char.flag.FACING_LEFT
+			objA1.render_flags |= D0.u8
+			u8[A1 + 0x2a] &= ~0x03
+			u8[A1 + 0x2a] |= D0.u8
+			u8[pool] = 0x01
+
+			playSound(SFX_GRAB)
+		}
+	}
+}
+
+
+//=============================================================
+// SSZ Bouncy Cloud
+//=============================================================
+// fn0450ec iterates P1 (A2=A0+0x38, 8 bytes) and P2
+// (A2=A0+0x40, 8 bytes) via fn045170. Per-player state:
+//   A2[0]: u8 state/bounce counter (0=free, 1-7=charging,
+//          0xFF/0xFE=launched)
+//   A2[1]: u8 rotation recovery timer
+//   A2[2..3]: u16 saved velocity.x
+//   A2[4..5]: u16 saved groundspeed
+//   A2[6]: u8 cloud deformation amount
+//   A2[7]: u8 cloud deformation detail
+// P3 pool layout: all 8 bytes, [0]-[7] same as above.
+//
+// IMPORTANT: fn0450ec reads A0+0x3e, A0+0x3f (P1 deformation)
+// and A0+0x46, A0+0x47 (P2 deformation) for cloud Y-position.
+// P3's deformation lives in pool[6] and pool[7]. We override
+// fn0450ec to include P3's deformation in the Y calculation.
+
+//# address-hook(0x0450ec)
+function void fn0450ec()
+{
+	D0 = 0x1c00
+	D1 = 0x80
+	fn0465d6()
+
+	D0.u16 += objA0.velocity.y
+
+	// Collect deformation values from P1 (0x3e), P2 (0x46), and P3 (pool)
+	u8 p1_deform = u8[A0 + 0x3e]		// P1 A2[6]
+	u8 p2_deform = u8[A0 + 0x46]		// P2 A2[6]
+
+	// P3 deformation from pool
+	u32 p3state = 0
+	u8 p3_deform = 0
+	u8 p3_detail = 0
+	u8 p3_timer = 0
+	if (useSonicTailsAndKnuckles)
+	{
+		p3state = P3State.Find()
+		if (p3state != 0)
+		{
+			p3_deform = u8[p3state + 6]
+			p3_detail = u8[p3state + 7]
+			p3_timer = u8[p3state + 1]
+		}
+	}
+
+	// Original logic: if any player has deformation, pick the largest
+	// and add it (signed) to Y. Otherwise, use recovery detail values.
+	D1.u8 = p1_deform
+	D2.u8 = p2_deform
+	D3.u8 = D1.u8 | D2.u8 | p3_deform
+	if (D3.u8 != 0)
+	{
+		// Find the largest deformation among all players
+		if (D1.u8 < D2.u8)
+		{
+			D1.u8 = D2.u8
+		}
+		if (D1.u8 < p3_deform)
+		{
+			D1.u8 = p3_deform
+		}
+		D0.u16 += D1.s8
+	}
+	else
+	{
+		// Recovery: pick the detail value paired with the largest
+		// timer (A2[1]). Original compares P1 timer vs P2 timer
+		// and selects the corresponding detail (A2[7]).
+		D1.u8 = u8[A0 + 0x39]		// P1 timer (A2[1])
+		D2.u8 = u8[A0 + 0x3f]		// P1 detail (A2[7])
+		D3.u8 = u8[A0 + 0x41]		// P2 timer (A2[1])
+		D4.u8 = u8[A0 + 0x47]		// P2 detail (A2[7])
+
+		// Find which player has the largest recovery timer
+		// and use their detail value
+		u8 bestTimer = D1.u8
+		u8 bestDetail = D2.u8
+		if (D3.u8 > bestTimer)
+		{
+			bestTimer = D3.u8
+			bestDetail = D4.u8
+		}
+		if (p3_timer > bestTimer)
+		{
+			bestDetail = p3_detail
+		}
+		D0.u16 += s8(bestDetail)
+	}
+
+	objA0.position.y.u16 = D0.u16
+	if (objA0.base_state != 0)
+	{
+		--objA0.base_state
+	}
+	objA0.state = u8[A0 + 0x2d]
+
+	// P1
+	A1 = 0xffffb000
+	A2 = A0 + 0x38
+	D6 = 3		// object.flag.P1_ON_OBJECT
+	fn045170()
+
+	// P2
+	A1 = 0xffffb04a
+	A2 = A0 + 0x40
+	D6 = 4		// object.flag.P2_ON_OBJECT
+	fn045170()
+
+	// P3
+	if (useSonicTailsAndKnuckles && p3state != 0)
+	{
+		A1 = P3_ADDR
+		D6 = 5
+		SSZCloud.P3Update(p3state)
+		objA0.flags2a &= ~0x20
+	}
+
+	Object.animationUpdate(0x046ac4)
+	DrawOrUnloadObject()
+}
+
+// P3-specific bouncy cloud interaction using pool state.
+// Mirrors fn045170 but uses pool[0]-[7] instead of A2[0]-[7].
+function void SSZCloud.P3Update(u32 pool)
+{
+#if STANDALONE
+	if (debug_mode.state)
+		return
+#endif
+
+	u8 bit = (1 << D6.u8)
+
+	D1 = 0x20
+	D2 = 0x10
+	D3 = 0
+	D4.u16 = objA0.position.x.u16
+	PlatformCheckClimbOnForCharacterA1()
+
+	if (u8[pool] == 0)
+	{
+		if (objA0.flags2a & bit)
+		{
+			u16[pool + 2] = objA1.velocity.x
+			u16[pool + 4] = objA1.groundspeed
+			objA1.velocity.x = 0
+			objA1.groundspeed = 0
+			objA0.state = 0x01
+			u8[A0 + 0x2d] = 0x01
+			D0.u8 = objA0.base_state
+			if (D0.u8 == 0)
+			{
+				D0 = 7
+				objA0.base_state = D0.u8
+			}
+			u8[pool] = D0.u8
+			u8[pool + 6] = u8[0x04669f]
+		}
+	}
+	else if (s8[pool] >= 0)
+	{
+		--u8[pool]
+		if (u8[pool] != 0)
+		{
+			D0.s16 = s8[pool]
+			A3 = 0x046698
+			u8[pool + 6] = u8[A3 + D0.s16]
+		}
+		else
+		{
+			playSound(0x8a)
+		#if STANDALONE
+			Input.setControllerRumbleByAddress(A1, 0.25f, 0.0f, 200)
+		#endif
+
+			objA1.velocity.x = u16[pool + 2]
+			u16[A1 + 0x1c] = u16[pool + 4]
+			objA1.velocity.y = -0x700
+			u8[A1 + 0x2a] |= char.flag.IN_AIR
+			u8[A1 + 0x2a] &= ~char.flag.ON_OBJECT
+			u8[A1 + 0x40] = 0
+			u8[A1 + 0x3d] = 0
+			u8[A1 + 0x05] = base_state.NORMAL
+			u8[A1 + 0x20] = 0
+
+			u8[pool] = 0xff
+			D0 = -0x1c
+			if ((u8[A1 + 0x2a] & char.flag.FACING_LEFT) == 0)
+			{
+				D0.s16 = -D0.s16
+				u8[pool] &= ~0x01
+			}
+			u8[A1 + 0x26] = D0.u8
+			u8[A0 + 0x2d] = 0
+			u8[pool + 6] = 0
+			u8[pool + 1] = 0x26
+
+			A3 = 0x0466c8
+			D1.u16 = objA1.position.x.u16
+
+			if (allocDynamicObjectAfterA0())
+			{
+				for (u16 k = 0; k < 4; ++k)
+				{
+					objA1.update_address = 0x0452da
+					u16[A1 + 0x2e] = A0.u16
+					D3.u16 = u16[(A3+=2)-2]
+					D3.u16 += D1.u16
+					objA1.position.x.u16 = D3.u16
+					D3.u16 = u16[(A3+=2)-2]
+					D3.u16 += objA0.position.y.u16
+					objA1.position.y.u16 = D3.u16
+					objA1.velocity.x = u16[(A3+=2)-2]
+					objA1.velocity.y = u16[(A3+=2)-2]
+
+					if (!allocDynamicObjectAfterA1())
+						break
+				}
+			}
+		}
+	}
+	else
+	{
+		if (u8[A1 + 0x2e] == 0)
+		{
+			D0.u8 = u8[A1 + 0x2a]
+			if (D0 & 0x02)
+			{
+				D0.u16 &= 0x28
+				if (D0.u16 == 0)
+				{
+					D0.s16 = s8[pool + 1]
+					A3 = 0x0466a0
+					u8[pool + 7] = u8[A3 + D0.s16]
+
+					--D0.u8
+					if (D0.s8 >= 0)
+					{
+						u8[pool + 1] = D0.u8
+					}
+					D0.u8 = u8[A1 + 0x26]
+					D1 = 0x00060002
+					if ((u8[pool] & 0x01) == 0)
+					{
+						if (D0.s8 >= 0)
+						{
+							D1 = (D1 << 16) + (D1 >> 16)
+						}
+
+						u16 result = u16(D0.u8) + u16(D1.u8)
+						D0.u8 = (result & 0x100) ? 0 : result
+					}
+					else
+					{
+						if (D0.s8 < 0)
+						{
+							D1 = (D1 << 16) + (D1 >> 16)
+						}
+
+						u16 result = u16(D0.u8) - u16(D1.u8)
+						D0.u8 = (result & 0x100) ? 0 : result
+					}
+
+					u8[A1 + 0x26] = D0.u8
+					if (u8[A1 + 0x26] != 0)
+					{
+						return
+					}
+				}
+			}
+		}
+		u8[pool] = 0
+	}
+}

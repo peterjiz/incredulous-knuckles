@@ -1,0 +1,159 @@
+
+//-------------------------------------------------------//
+// MGZ: Marble Garden Zone                               //
+//-------------------------------------------------------//
+
+
+//-------------------------------------------------------//
+// Boss-specific swap disable                            //
+//-------------------------------------------------------//
+// MGZ Act 2 boss requires specific character control.
+// Disable swapping during this boss fight.
+
+//# address-hook(0x06c4be)
+function void fn06c4be()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		swap_cooldown_timer = 300
+
+		// MGZ2 flying system is hardcoded to P2. Ensure Tails is
+		// at P2 before the controller spawns, regardless of swap state.
+		if (u8[0xffffb000 + 0x38] == CHARACTER_TAILS)
+		{
+			// Tails at P1 — swap P1↔P2 so controller finds Tails at P2
+			// and the other character at P1 becomes the carried passenger.
+			CharacterSwap.SwapSlots(0xffffb000, 0xffffb04a)
+
+			if (u32[0xffffcc0a] != 0)
+				u16[0xffffcc0a + 0x30] = 0xb04a
+
+			u32 savedA0 = A0
+			A0 = 0xffffb000
+			ClearPositionBackup()
+			A0 = 0xffffb04a
+			ClearPositionBackup()
+			A0 = savedA0
+		}
+		else if (u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+		{
+			// Tails at P3 — swap P3↔P2
+			CharacterSwap.SwapSlots(0xffffb04a, P3_ADDR)
+
+			u16 tmpAI = tails.ai_routine
+			u16 tmpCC = tails.control_counter
+			u16 tmpRC = tails.respawn_counter
+			tails.ai_routine = knuckles3.ai_routine
+			tails.control_counter = knuckles3.control_counter
+			tails.respawn_counter = knuckles3.respawn_counter
+			knuckles3.ai_routine = tmpAI
+			knuckles3.control_counter = tmpCC
+			knuckles3.respawn_counter = tmpRC
+
+			if (u32[0xffffcc0a] != 0)
+				u16[0xffffcc0a + 0x30] = 0xb04a
+
+			u32 savedA0 = A0
+			A0 = 0xffffb04a
+			ClearPositionBackup()
+			A0 = P3_ADDR
+			ClearPositionBackup()
+			A0 = savedA0
+		}
+	}
+	base.fn06c4be()
+}
+
+
+//-------------------------------------------------------//
+// MGZ 1 Boss: Platform Damage Check                     //
+//-------------------------------------------------------//
+// fn0888a6 checks P1 and P2 separately for collision
+// with the Knuckles platform, damaging them if they
+// contact the dangerous side.
+// Type: KNOCKBACK/DAMAGE - damages players on platform.
+
+//# address-hook(0x0888a6)
+function void fn0888a6()
+{
+	base.fn0888a6()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Check P3 against the platform
+	// The base function checks D6 bits 0x01 (P1) and 0x02 (P2)
+	// after fn01dc56. P3 won't be in those bits, so we do a
+	// manual proximity + damage check.
+	if ((objA0.flags38 & 0x10) == 0)
+	{
+		A1 = P3_ADDR
+		if (u32[A1] != 0)
+		{
+			D0.u16 = objA1.position.y.u16 - objA0.position.y.u16 + 0x28
+			s16 dx = s16(objA1.position.x.u16) - s16(objA0.position.x.u16)
+			if (abs(dx) <= objA0.box_size.x + 11)
+			{
+				if (D0.u16 < objA0.box_size.y * 2 + 2)
+				{
+					if (D0.s16 >= 0)
+					{
+						DamageCharacter()
+					}
+				}
+			}
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// MGZ 2 Boss: Proximity trigger (Sonic/Tails approach)  //
+//-------------------------------------------------------//
+// fn06c5c4 checks P1 (0xffffb000) x-position to decide
+// when to start flying right. P3 should also trigger this.
+// Type: PROXIMITY - triggers boss movement on approach.
+
+//# address-hook(0x06c5c4)
+function void fn06c5c4()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn06c5c4()
+		return
+	}
+
+	// Override: check closest player x-position
+	UpdateMovementStraightSimple()
+	if ((objA0.flags2a & 0x40) == 0)
+	{
+		// Find the rightmost player position among P1, P2, P3
+		D0.u16 = u16[0xffffb000 + 0x10]
+
+		u32 p2addr = 0xffffb04a
+		if (u32[p2addr] != 0)
+		{
+			if (u16[p2addr + 0x10] > D0.u16)
+				D0.u16 = u16[p2addr + 0x10]
+		}
+
+		u32 p3addr = P3_ADDR
+		if (u32[p3addr] != 0)
+		{
+			if (u16[p3addr + 0x10] > D0.u16)
+				D0.u16 = u16[p3addr + 0x10]
+		}
+
+		if (D0.u16 < objA0.position.x.u16)
+		{
+			fn0847e6()
+			UpdateMovementStraightSimple()
+			return
+		}
+	}
+
+	// Fly quickly to the right on first hit
+	objA0.base_state = 0x1c
+	objA0.velocity.x = 0x200
+	objA0.countdown_callback = 0x06c614
+}

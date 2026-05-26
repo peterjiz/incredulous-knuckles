@@ -1,0 +1,156 @@
+
+//-------------------------------------------------------//
+// Zone Shared: Buttons, Eggrobo removal, path routing   //
+//-------------------------------------------------------//
+// - Always Eggman (no Eggrobo)
+// - Knuckles cutscenes replaced with player-activated
+//   switches: jump on the button (AIZ2, HCZ2, CNZ2) or
+//   press Y near the lever (MHZ2)
+
+
+//=============================================================
+// GLOBAL: Always Eggman, never Eggrobo
+//=============================================================
+
+// Keep cutscene button visible in 3-character mode even
+// when Knuckles is P1 (base game unloads it for Knuckles)
+//# address-hook(0x065bd4)
+function void fn065bd4()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		setupObjectAttributesFull(0x066402)
+		objA0.update_address = 0x065c04
+		objA0.position.y.u16 += 4
+		addPatternLoadingCue(0x065bfc)
+		return
+	}
+	base.fn065bd4()
+}
+
+// Button per-frame update: in 3-character mode, detect the
+// PLAYER landing on it instead of cutscene Knuckles.
+// When pressed: show pressed sprite + trigger zone effect.
+//# address-hook(0x065c04)
+function void fn065c04()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		A1 = 0xffffb000
+		s16 dx = s16(objA1.position.x.u16) - s16(objA0.position.x.u16)
+		s16 dy = s16(objA1.position.y.u16) - s16(objA0.position.y.u16)
+
+		if (abs(dx) < BUTTON_DETECT_X && dy >= -BUTTON_DETECT_Y_ABOVE && dy < BUTTON_DETECT_Y_BELOW && objA1.velocity.y >= 0)
+		{
+			objA0.update_address = 0x065c50
+			objA0.animation.sprite = 1
+			objA0.countdown_value = BUTTON_COOLDOWN_FRAMES
+			u8[0xfffffaa9] = 0xff
+			objA0.respawn_entry = 0
+
+			call tableLookupAddress(0x065c40, objA0.subtype2c)
+
+			player1.control_override = 0
+			player2.control_override = 0
+			u8[0xffffb000 + 0x2e] = 0
+		}
+
+		DrawObject()
+		return
+	}
+	base.fn065c04()
+}
+
+
+// Pressed state — cooldown timer + must leave before next press
+//# address-hook(0x065c50)
+function void fn065c50()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		if (objA0.countdown_value > 0)
+		{
+			--objA0.countdown_value
+		}
+		else
+		{
+			A1 = 0xffffb000
+			s16 dx = s16(objA1.position.x.u16) - s16(objA0.position.x.u16)
+			s16 dy = s16(objA1.position.y.u16) - s16(objA0.position.y.u16)
+			if (abs(dx) >= BUTTON_LEAVE_DISTANCE || abs(dy) >= BUTTON_LEAVE_DISTANCE)
+			{
+				objA0.animation.sprite = 0
+				objA0.update_address = 0x065c04
+			}
+		}
+		DrawObject()
+		return
+	}
+	base.fn065c50()
+}
+
+
+
+//-------------------------------------------------------//
+// Path Routing System                                   //
+//-------------------------------------------------------//
+// The base TriggerNextZone already routes MGZ->CNZ and
+// CNZ->ICZ based on camera Y. We add AIZ->HCZ, FBZ->MHZ,
+// and SOZ->HPZ routing.
+
+global u8 EndLocation
+global u16 PathRouting.KnuxStage
+
+
+//-------------------------------------------------------//
+// TriggerNextZone override                              //
+//-------------------------------------------------------//
+
+//# address-hook(0x085e3a)
+function void TriggerNextZone()
+{
+	// Capture camera Y before base resets state
+	u16 exitCamY = camera.position.y.u16
+	u16 nextZone = D0.u16
+
+	// Let base handle standard routing (MGZ->CNZ, CNZ->ICZ)
+	// and all transition mechanics (fade, save, level loading)
+	base.TriggerNextZone()
+
+	// Add extra route cases the base doesn't handle
+	if (nextZone == 0x0100)
+	{
+		// AIZ -> HCZ: use path from AIZ2
+		level.start_location = EndLocation
+		EndLocation = 0
+	}
+	else if (nextZone == 0x0700)
+	{
+		// FBZ -> MHZ: land on top
+		level.start_location = 1
+	}
+	else if (nextZone == 0x1601 && global.zone_act == 0x0901)
+	{
+		// SOZ -> HPZ: upper path
+		level.start_location = 2
+	}
+}
+
+
+//-------------------------------------------------------//
+// TitleCard.Init override                               //
+//-------------------------------------------------------//
+// Track which path was taken through AIZ2, so the
+// AIZ->HCZ transition routes correctly.
+
+//# address-hook(0x02d6a6)
+function void TitleCard.Init()
+{
+	base.TitleCard.Init()
+
+	if (global.zone_act == 0x0001)
+	{
+		// AIZ2: detect path from camera Y for HCZ routing
+		EndLocation = (camera.position.y.u16 > 0x0440) ? 2 : 1
+	}
+}

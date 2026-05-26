@@ -1,0 +1,26 @@
+
+//-------------------------------------------------------//
+// DDZ: Doomsday Zone                                    //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// DDZ: Respawn P2 (Tails) — base game clears the P2 slot
+//=============================================================
+
+//# address-hook(0x081554)
+function void fn081554()
+{
+	base.fn081554()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		u32[0xffffb04a] = addressof(Character.BaseUpdate.Tails)
+		u8[0xffffb04a + 0x04] = render_flag.WORLD
+		u8[0xffffb04a + 0x05] = 0x00
+		u16[0xffffb04a + 0x10] = u16[0xffffb000 + 0x10] - 0x18
+		u16[0xffffb04a + 0x14] = u16[0xffffb000 + 0x14] + 0x10
+		u8[0xffffb04a + 0x38] = CHARACTER_TAILS
+		u8[0xffffb04a + 0x2a] = 0x02
+	}
+}

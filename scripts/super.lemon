@@ -1,0 +1,547 @@
+
+//-------------------------------------------------------//
+// All-3 Hyper Form with Rainbow Palette + Hyper Powers   //
+//-------------------------------------------------------//
+//
+// When any character transforms, ALL 3 go Hyper:
+// - All flash rainbow (Hyper Sonic palette from ROM 0x003a42)
+// - Super Flickies spawn (follow Tails, attack enemies)
+// - After-images on P1
+// - Hyper Sonic flash attack works at P1
+// - Hyper Knuckles earthquake works at P1
+//
+// Ring drain shared (1 ring/sec from P1 only).
+// Hyper state persists through character swap.
+
+// State tracking
+global bool hyper_all_active
+global u8 hyper_p2_frame
+global u8 hyper_p2_timer
+global u8 hyper_p3_frame
+global u8 hyper_p3_timer
+
+
+//-------------------------------------------------------//
+// Apply rainbow palette for one character               //
+//-------------------------------------------------------//
+// All characters use Hyper Sonic rainbow from ROM 0x003a42.
+// Writes to both primary and underwater palette buffers.
+
+function void ApplyHyperPalette(u8 charId, u16 frame)
+{
+	u32 src = 0x003a42 + u32(frame)
+
+#if STANDALONE
+	u32 dest = 0x802000 + u32(charId) * 0x40
+	u32 destUW = 0x802300 + u32(charId) * 0x40
+
+	if (charId == CHARACTER_TAILS)
+	{
+		// Tails layout: colors at +0x10, +0x12, +0x16 (skip +0x14)
+		u16[dest + 0x10] = u16[src]
+		u16[dest + 0x12] = u16[src + 2]
+		u16[dest + 0x16] = u16[src + 4]
+		u16[destUW + 0x10] = u16[src]
+		u16[destUW + 0x12] = u16[src + 2]
+		u16[destUW + 0x16] = u16[src + 4]
+	}
+	else
+	{
+		// Sonic/Knuckles layout: 3 colors at offset +4
+		copyMemory(dest + 4, src, 6)
+		copyMemory(destUW + 4, src, 6)
+	}
+#else
+	u32 dest = 0xfffffc00
+	u32 destUW = 0xfffff080
+	if (charId == CHARACTER_TAILS)
+	{
+		u16[dest + 0x10] = u16[src]
+		u16[dest + 0x12] = u16[src + 2]
+		u16[dest + 0x16] = u16[src + 4]
+		u16[destUW + 0x10] = u16[src]
+		u16[destUW + 0x12] = u16[src + 2]
+		u16[destUW + 0x16] = u16[src + 4]
+	}
+	else
+	{
+		copyMemory(dest + 4, src, 6)
+		copyMemory(destUW + 4, src, 6)
+	}
+#endif
+}
+
+
+//-------------------------------------------------------//
+// Companion palette cycling helper                      //
+//-------------------------------------------------------//
+
+function void CycleCompanionPalettes()
+{
+	// P2
+	if (hyper_p2_timer > 0)
+	{
+		--hyper_p2_timer
+	}
+	else
+	{
+		hyper_p2_timer = 4
+		ApplyHyperPalette(u8[0xffffb04a + 0x38], u16(hyper_p2_frame))
+		hyper_p2_frame += 6
+		if (hyper_p2_frame >= 72)
+			hyper_p2_frame = 0
+	}
+
+	// P3
+	if (hyper_p3_timer > 0)
+	{
+		--hyper_p3_timer
+	}
+	else
+	{
+		hyper_p3_timer = 4
+		ApplyHyperPalette(u8[P3_ADDR + 0x38], u16(hyper_p3_frame))
+		hyper_p3_frame += 6
+		if (hyper_p3_frame >= 72)
+			hyper_p3_frame = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// performSuperTransformation override                   //
+//-------------------------------------------------------//
+// When P1 transforms, force ALL 3 to Hyper (0xff).
+// Spawns Super Flickies and after-images for full
+// Hyper powers on all characters.
+
+function bool Character.performSuperTransformation()
+{
+	if (!useSonicTailsAndKnuckles)
+		return base.Character.performSuperTransformation()
+
+	bool result = base.Character.performSuperTransformation()
+	if (!result)
+		return false
+
+	// Force Hyper for all 3
+	super.active = 0xff
+	super.active.tails = 0xff
+	hyper_all_active = true
+
+	// Set invincibility on companions
+	u8[0xffffb04a + 0x2b] |= char.bonus.INVINCIBLE
+	u8[P3_ADDR + 0x2b] |= char.bonus.INVINCIBLE
+
+	// The base already spawned per-character effects:
+	//   Sonic: Hyper stars at 0xffffcd7c + after-images at 0xffffcbc0
+	//   Tails: Flickies at 0xffffcd7c
+	//   Knuckles: after-images at 0xffffcbc0
+	// We need BOTH stars and flickies active. Since they share 0xffffcd7c,
+	// spawn flickies at 4 separate slots (0xffffcea4+) to avoid conflict.
+
+	if (option.hyper_flickies != 0)
+	{
+		// If base put flickies at cd7c (Tails at P1), clear them — ours below replace them
+		if (u32[0xffffcd7c] == 0x01a170)
+			u32[0xffffcd7c] = 0
+
+		// Spawn Super Flickies at custom slots (don't conflict with stars at cd7c)
+		// Slots 106-109: 0xffffcea4, 0xffffceee, 0xffffcf38, 0xffffcf82
+		for (u16 k = 0; k < 4; ++k)
+		{
+			u32 flickySlot = 0xffffcea4 + u32(k) * 0x4a
+			u32[flickySlot] = 0x01a19c		// Individual flicky update function
+			u8[flickySlot + 0x34] = u8(k * 0x40)	// Angle spacing: 0, 0x40, 0x80, 0xC0
+		}
+	}
+
+	// If base didn't spawn stars (non-Sonic at P1), add them now
+	if (u8[0xffffb000 + 0x38] != CHARACTER_SONIC)
+	{
+		if (u32[0xffffcd7c] == 0)
+			u32[0xffffcd7c] = 0x019348
+	}
+
+	// Ensure after-images on P1 (base only spawns them for Sonic/Knuckles)
+	u32[0xffffcbc0] = addressof(AfterImages.Init)
+
+	// Phase-offset companion timers for visual stagger
+	hyper_p2_frame = 24
+	hyper_p2_timer = 2
+	hyper_p3_frame = 48
+	hyper_p3_timer = 4
+
+	return true
+}
+
+
+//-------------------------------------------------------//
+// S Monitor super transformation override                //
+//-------------------------------------------------------//
+// The S Monitor (debug-only super monitor) uses a separate
+// code path (ItemEffect.ApplySuperTransformation at 0x01da60)
+// which doesn't go through Character.performSuperTransformation,
+// so our hyper-all-3 logic was being skipped.
+
+//# address-hook(0x01da60)
+function void ItemEffect.ApplySuperTransformation()
+{
+	base.ItemEffect.ApplySuperTransformation()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Force Hyper for all 3
+	super.active = 0xff
+	super.active.tails = 0xff
+	hyper_all_active = true
+
+	// Set invincibility on companions
+	u8[0xffffb04a + 0x2b] |= char.bonus.INVINCIBLE
+	u8[P3_ADDR + 0x2b] |= char.bonus.INVINCIBLE
+
+	// Same flicky/star/after-image setup as the normal hyper path
+	if (option.hyper_flickies != 0)
+	{
+		if (u32[0xffffcd7c] == 0x01a170)
+			u32[0xffffcd7c] = 0
+
+		for (u16 k = 0; k < 4; ++k)
+		{
+			u32 flickySlot = 0xffffcea4 + u32(k) * 0x4a
+			u32[flickySlot] = 0x01a19c
+			u8[flickySlot + 0x34] = u8(k * 0x40)
+		}
+	}
+	if (u8[0xffffb000 + 0x38] != CHARACTER_SONIC)
+	{
+		if (u32[0xffffcd7c] == 0)
+			u32[0xffffcd7c] = 0x019348
+	}
+
+	// Ensure after-images on P1
+	u32[0xffffcbc0] = addressof(AfterImages.Init)
+
+	// Phase-offset companion timers
+	hyper_p2_frame = 24
+	hyper_p2_timer = 2
+	hyper_p3_frame = 48
+	hyper_p3_timer = 4
+}
+
+
+//-------------------------------------------------------//
+// UpdatePaletteEffects.SuperForm override               //
+//-------------------------------------------------------//
+// Cycles rainbow palettes for ALL 3 characters.
+// P1 uses base timer (super.palettefx.timer/frame).
+// P2/P3 use separate timers for phase-offset stagger.
+
+function void UpdatePaletteEffects.SuperForm()
+{
+	if (!hyper_all_active)
+	{
+		base.UpdatePaletteEffects.SuperForm()
+		return
+	}
+
+	// Safety: if super was cancelled externally, clean up
+	if (super.active == 0 && super.active.tails == 0)
+	{
+		hyper_all_active = false
+		base.UpdatePaletteEffects.SuperForm()
+		return
+	}
+
+	if (super.palettefx.state == 0)
+	{
+		hyper_all_active = false
+		return
+	}
+
+	// Fade-out: let base handle P1's fade, stop companion cycling
+	if (super.palettefx.state == 2)
+	{
+		base.UpdatePaletteEffects.SuperForm()
+		if (super.palettefx.state == 0)
+			hyper_all_active = false
+		return
+	}
+
+	// Fade-in: let base handle P1's fade, start companion cycling early
+	if (super.palettefx.state != 0xff)
+	{
+		base.UpdatePaletteEffects.SuperForm()
+		CycleCompanionPalettes()
+		return
+	}
+
+	// State 0xff: active cycling -- handle ALL 3 ourselves
+
+	// P1: Hyper-speed cycling (timer=4 = every 5 frames)
+	--super.palettefx.timer
+	if (super.palettefx.timer < 0)
+	{
+		super.palettefx.timer = 4
+		u8 p1char = u8[0xffffb000 + 0x38]
+		ApplyHyperPalette(p1char, super.palettefx.frame)
+		super.palettefx.frame += 6
+		if (super.palettefx.frame >= 72)
+			super.palettefx.frame = 0
+	}
+
+	// P2 + P3
+	CycleCompanionPalettes()
+}
+
+
+//-------------------------------------------------------//
+// Super Flickies: follow Tails instead of P1            //
+//-------------------------------------------------------//
+// Base flicky code hardcodes 0xffffb000 (P1) as orbit
+// center. We redirect to wherever Tails actually is.
+// Safe because these functions only run in flicky context.
+
+function u32 FindTailsSlot()
+{
+	if (u8[0xffffb000 + 0x38] == CHARACTER_TAILS)
+		return 0xffffb000
+	if (u8[0xffffb04a + 0x38] == CHARACTER_TAILS)
+		return 0xffffb04a
+	if (u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+		return P3_ADDR
+	return 0xffffb04a
+}
+
+// Flicky init: spawn near Tails, not P1
+//# address-hook(0x01a19c) end(0x01a1ee)
+function void fn01a19c()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 t = FindTailsSlot()
+		u16 sx = u16[0xffffb000 + 0x10]
+		u16 sy = u16[0xffffb000 + 0x14]
+		u16[0xffffb000 + 0x10] = u16[t + 0x10]
+		u16[0xffffb000 + 0x14] = u16[t + 0x14]
+		base.fn01a19c()
+		u16[0xffffb000 + 0x10] = sx
+		u16[0xffffb000 + 0x14] = sy
+	}
+	else
+	{
+		base.fn01a19c()
+	}
+}
+
+// Flicky orbit: circle around Tails, not P1
+//# address-hook(0x01a292) end(0x01a31c)
+function void fn01a292()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 t = FindTailsSlot()
+		u16 sx = u16[0xffffb000 + 0x10]
+		u16 sy = u16[0xffffb000 + 0x14]
+		u16[0xffffb000 + 0x10] = u16[t + 0x10]
+		u16[0xffffb000 + 0x14] = u16[t + 0x14]
+		base.fn01a292()
+		u16[0xffffb000 + 0x10] = sx
+		u16[0xffffb000 + 0x14] = sy
+	}
+	else
+	{
+		base.fn01a292()
+	}
+}
+
+// Flicky fly-away: depart from Tails, not P1
+//# address-hook(0x01a276) end(0x01a28c)
+function void fn01a276()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		u32 t = FindTailsSlot()
+		u16 sx = u16[0xffffb000 + 0x10]
+		u16 sy = u16[0xffffb000 + 0x14]
+		u16[0xffffb000 + 0x10] = u16[t + 0x10]
+		u16[0xffffb000 + 0x14] = u16[t + 0x14]
+		base.fn01a276()
+		u16[0xffffb000 + 0x10] = sx
+		u16[0xffffb000 + 0x14] = sy
+	}
+	else
+	{
+		base.fn01a276()
+	}
+}
+
+
+// Flicky per-frame update: base zeros P2 on despawn
+//# address-hook(0x01a1f4) end(0x01a226)
+function void fn01a1f4()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn01a1f4()
+		return
+	}
+
+	u16 savedX = u16[0xffffb04a + 0x10]
+	u16 savedY = u16[0xffffb04a + 0x14]
+	u8 savedState = u8[0xffffb04a + 0x20]
+
+	base.fn01a1f4()
+
+	u16[0xffffb04a + 0x10] = savedX
+	u16[0xffffb04a + 0x14] = savedY
+	u8[0xffffb04a + 0x20] = savedState
+}
+
+
+// Flicky hit: base teleports P2 to impact point
+//# address-hook(0x01a31e) end(0x01a378)
+function void fn01a31e()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn01a31e()
+		return
+	}
+
+	u16 savedX = u16[0xffffb04a + 0x10]
+	u16 savedY = u16[0xffffb04a + 0x14]
+	u8 savedState = u8[0xffffb04a + 0x20]
+
+	base.fn01a31e()
+
+	u16[0xffffb04a + 0x10] = savedX
+	u16[0xffffb04a + 0x14] = savedY
+	u8[0xffffb04a + 0x20] = savedState
+}
+
+
+//-------------------------------------------------------//
+// Hyper Knuckles earthquake override                    //
+//-------------------------------------------------------//
+// In Sonic & Tails mode, super.active represents Sonic's
+// super state. The base earthquake check (super.active & 0x80)
+// may not trigger reliably for Knuckles in this mode.
+// We override the glide collision to check hyper_all_active.
+
+//# address-hook(0x016890) end(0x016c78)
+function void UpdateKnucklesGlideCollision()
+{
+	if (!hyper_all_active)
+	{
+		base.UpdateKnucklesGlideCollision()
+		return
+	}
+
+	// Save pre-collision state to detect wall hits
+	u8 prevDoubleJumpState = char.double_jump_state
+	s16 prevGroundspeed = char.groundspeed
+
+	base.UpdateKnucklesGlideCollision()
+
+	// Detect wall hit: glide state (1) transitioned to climbing (4)
+	if (prevDoubleJumpState == 1 && char.double_jump_state == 4)
+	{
+		// Check if base already triggered the earthquake
+		if (camera.hyper_knux_shake == 0 && u16(prevGroundspeed) >= 0x480)
+		{
+			camera.hyper_knux_shake = 0x14
+			Character.ClearEnemiesOnScreen()
+			playSound(0x49)
+		#if STANDALONE
+			Input.setControllerRumbleByAddress(A0, 0.5f, 1.0f, 200)
+		#endif
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// cancelSuperTransformation override                    //
+//-------------------------------------------------------//
+// Cancels hyper for all 3, restores palettes.
+// Flickies auto-despawn when super.active.tails == 0.
+
+function void Character.cancelSuperTransformation()
+{
+	bool wasHyper = hyper_all_active
+
+	base.Character.cancelSuperTransformation()
+
+	if (wasHyper)
+	{
+		// Ensure both flags cleared
+		super.active = 0
+		super.active.tails = 0
+		hyper_all_active = false
+
+		// Clear invincibility on companions
+		u8[0xffffb04a + 0x2b] &= ~char.bonus.INVINCIBLE
+		u8[P3_ADDR + 0x2b] &= ~char.bonus.INVINCIBLE
+
+		// Restore normal palettes for companions
+#if STANDALONE
+		u8 char2 = u8[0xffffb04a + 0x38]
+		u8 char3 = u8[P3_ADDR + 0x38]
+		loadCharacterPalette(char2, 0x802000 + u32(char2) * 0x40, 0)
+		loadCharacterPalette(char3, 0x802000 + u32(char3) * 0x40, 0)
+#endif
+	}
+}
+
+
+//-------------------------------------------------------//
+// SonicPressedJumpInMidAir override                     //
+//-------------------------------------------------------//
+// The base function sets camera.locktime.player1, triggers
+// star sparks at P1's position, and plays a sound -- all
+// P1-specific. When Sonic is a companion, perform just the
+// velocity change (the actual dash) and skip everything else.
+
+function void SonicPressedJumpInMidAir()
+{
+	if (hyper_all_active && A0 != 0xffffb000)
+	{
+		char.flags &= ~char.flag.CONTROL_LOCK
+		char.double_jump_state = 1
+
+		u8 input = control.player1.state & CONTROL_DPAD
+		if (input != 0 && input < 0x0b)
+		{
+			A1 = 0x011afa + input * 4
+			char.velocity.x = s16[A1]
+			char.velocity.y = s16[A1+2]
+		}
+		else
+		{
+			char.velocity.x = (char.flags & char.flag.FACING_LEFT) ? -0x800 : 0x800
+			char.velocity.y = 0
+		}
+		char.groundspeed = char.velocity.x
+
+		ClearPositionBackup()
+		return
+	}
+	base.SonicPressedJumpInMidAir()
+}
+
+
+//-------------------------------------------------------//
+// UpdateRingsInSuperForm override                       //
+//-------------------------------------------------------//
+// Called from all 3 characters' UpdateNormalState.
+// Without this, ring drain runs 3x per frame.
+// Only P1 should process the countdown.
+
+function void Character.UpdateRingsInSuperForm()
+{
+	if (hyper_all_active && A0 != 0xffffb000)
+		return
+	base.Character.UpdateRingsInSuperForm()
+}

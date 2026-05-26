@@ -1,0 +1,78 @@
+{
+	"Metadata":
+	{
+		"Name": "Incredulous Knuckles",
+		"UniqueID": "incredulous-knuckles",
+		"Author": "peterjiz",
+		"Description": "Knuckles isn't buying Eggman's lies this time. Adds Knuckles as a 3rd AI companion when playing as Sonic & Tails — with character swapping, 3-person formations, Hyper form for all three, and both paths unlocked in every zone.",
+		"URL": "",
+		"ModVersion": "1.0.0.0",
+		"GameVersion": "24.02.02.0"
+	},
+	"Settings":
+	{
+		"List":
+		[
+			{
+				"InternalName": "AllowKnucklesSSZ",
+				"DisplayName": "Knuckles' Sky Sanctuary",
+				"Category": "Paths",
+				"Variable": "option.allow_ssz_access",
+				"DefaultValue": "0",
+				"Options":
+				{
+					"0": "Off",
+					"1": "On (HPZ teleporter)"
+				}
+			},
+			{
+				"InternalName": "HyperSpeedMode",
+				"DisplayName": "Hyper Speed",
+				"Category": "Gameplay",
+				"Variable": "option.hyper_speed_mode",
+				"DefaultValue": "1",
+				"Options":
+				{
+					"0": "Per-character",
+					"1": "Sonic's speed for all"
+				}
+			},
+			{
+				"InternalName": "DisableHPZMiniboss",
+				"DisplayName": "HPZ Mini-Boss",
+				"Category": "Gameplay",
+				"Variable": "option.disable_hpz_miniboss",
+				"DefaultValue": "1",
+				"Options":
+				{
+					"0": "Fight Knuckles",
+					"1": "Skip to Robotnik"
+				}
+			},
+			{
+				"InternalName": "ERZFlightCancel",
+				"DisplayName": "ERZ Flight Toggle",
+				"Category": "Compatibility",
+				"Variable": "option.erz_flight_cancel",
+				"DefaultValue": "1",
+				"Options":
+				{
+					"0": "Off",
+					"1": "A button toggles flight"
+				}
+			},
+			{
+				"InternalName": "HyperFlickies",
+				"DisplayName": "Hyper Flickies",
+				"Category": "Gameplay",
+				"Variable": "option.hyper_flickies",
+				"DefaultValue": "1",
+				"Options":
+				{
+					"0": "Off",
+					"1": "On"
+				}
+			}
+		]
+	}
+}

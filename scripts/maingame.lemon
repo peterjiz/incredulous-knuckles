@@ -1,0 +1,355 @@
+
+//-------------------------------------------------------//
+// Preserve debug mode across pause/unpause              //
+//-------------------------------------------------------//
+// Base game clears debug_mode.state on unpause if the
+// persistent setting is off. Keep it alive if already active.
+
+function void Standalone.onResumeAfterPause()
+{
+	u8 savedState = debug_mode.state
+	base.Standalone.onResumeAfterPause()
+	if (savedState != 0 && debug_mode.state == 0)
+	{
+		debug_mode.state = savedState
+		debug_mode.enabled.u8 = 1
+	}
+}
+
+
+//-------------------------------------------------------//
+// Super/Hyper speed cap override                        //
+//-------------------------------------------------------//
+// When option.hyper_speed_mode == 1, ALL super/hyper
+// characters use Sonic's faster speed caps.
+
+function void setSpeedCapProperties(u32 address, bool isSuperActive)
+{
+	base.setSpeedCapProperties(address, isSuperActive)
+
+	if (useSonicTailsAndKnuckles && isSuperActive && option.hyper_speed_mode != 0)
+	{
+		if (char.flags & char.flag.UNDERWATER)
+		{
+			// Sonic's underwater super values
+			u16[address]     = 0x500
+			u16[address + 2] = 0x18
+			u16[address + 4] = 0x80
+		}
+		else
+		{
+			// Sonic's surface super values (STANDALONE accel = 0x20)
+			u16[address]     = 0x0a00
+			u16[address + 2] = 0x20
+			u16[address + 4] = 0x100
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Allocator overrides: reserve slot 93 for P3           //
+//-------------------------------------------------------//
+// The game's allocDynamicObjectStd scans 0x59 (89) slots from 0xFFFFB0DE,
+// with its last check at 0xFFFFCAE2 (our P3 slot). Shrink by 1 so the
+// allocator stops at 0xFFFFCA98, leaving slot 93 permanently for P3.
+
+function bool allocDynamicObjectStd()
+{
+	return allocDynamicObject(0xffffb0de, 0x58)
+}
+// allocDynamicObjectAfterA0 is NOT overridden — P3's slot is always
+// occupied (u32 = 0x350100), so the allocator naturally skips it.
+
+
+//-------------------------------------------------------//
+// SetGlobalCharacters override                          //
+//-------------------------------------------------------//
+
+function void SetGlobalCharacters()
+{
+	// Combo 0 = Sonic+Tails+Knuckles (our 3-character mode)
+	// Combo 5 = plain Sonic+Tails (no Knuckles companion)
+	bool wasOurCombo = (levelselect.characters == CHARS_SONIC_AND_TAILS && global.game_mode != 0x88 && competition_mode.active == 0)
+	bool wasPlainSonicTails = (levelselect.characters == CHARS_SONIC_TAILS_AND_KNUCKLES && global.game_mode != 0x88 && competition_mode.active == 0)
+
+	if (wasPlainSonicTails)
+	{
+		levelselect.characters = CHARS_SONIC_AND_TAILS
+	}
+
+	base.SetGlobalCharacters()
+
+	if (wasPlainSonicTails)
+	{
+		levelselect.characters = CHARS_SONIC_TAILS_AND_KNUCKLES
+	}
+
+	useSonicTailsAndKnuckles = wasOurCombo
+	if (useSonicTailsAndKnuckles)
+	{
+		global.characters = CHARS_SONIC_AND_TAILS
+	}
+}
+
+
+//-------------------------------------------------------//
+// SetupCharacterAtStartPosition override                //
+//-------------------------------------------------------//
+
+function void SetupCharacterAtStartPosition()
+{
+	base.SetupCharacterAtStartPosition()
+
+	if (!useSonicTailsAndKnuckles || checkpoint.number != 0)
+		return
+
+	if (global.zone_act == 0x0300 && level.start_location == 2)
+	{
+		// CNZ1 Knuckles' path: use Knuckles' ROM start position
+		u32 addr = 0x1e3cd8 + global.zone * 8 + global.act * 4
+		u16 startX = u16[addr]
+		u16 startY = u16[addr + 2]
+		u16[0xffffb010] = startX
+		u16[0xffffb014] = startY
+
+		// Recalculate camera with Knuckles' area offset
+		D1.u16 = startX + 0xb0
+		D0.u16 = startY
+		D1.s16 = max(D1.s16 - s16(getScreenWidth() / 2), 0)
+		if ((D1.u16 & 0x0f) == 0)
+			D1.u16++
+		D1.u16 = min(D1.u16, move_area.right)
+		camera.position.x.u16 = D1.u16
+		u16[0xffffee60] = D1.u16
+
+		D0.s16 = clamp(D0.s16 - 96, 0, s16(move_area.bottom.current))
+		camera.position.y.u16 = D0.u16
+		u16[0xffffee64] = D0.u16
+	}
+	else if (global.zone_act == 0x0500 && level.start_location == 2)
+	{
+		// ICZ1 Knuckles' path: transporter area position
+		u16[0xffffb010] = 0x3640
+		u16[0xffffb014] = 0x0660
+		camera.position.x.u16 = 0x35a0
+		camera.position.y.u16 = 0x05fb
+		u16[0xffffee60] = 0x35a0
+		u16[0xffffee64] = 0x05fb
+	}
+}
+
+
+//-------------------------------------------------------//
+// fn0067ee override                                     //
+//-------------------------------------------------------//
+
+//# address-hook(0x0067ee)
+function void fn0067ee()
+{
+	base.fn0067ee()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+	if (checkpoint.number != 0 || global.stage_type != 0)
+		return
+
+	if (global.zone_act == 0x0300 && level.start_location == 2)
+	{
+		// CNZ1 Knuckles' path: walk-in instead of Tails carry-in
+		tails.ai_routine = 0x06
+
+		u16[0xffffb04a + 0x10] = u16[0xffffb010]
+		u16[0xffffb04a + 0x14] = u16[0xffffb014]
+		u16[P3_ADDR + 0x10] = u16[0xffffb010] + 0x20
+		u16[P3_ADDR + 0x14] = u16[0xffffb014]
+
+		u32[0xffffb172] = 0x044a0c
+	}
+	else if (global.zone_act == 0x0500 && level.start_location == 2)
+	{
+		// ICZ1 Knuckles' path: cancel snowboard intro
+		// (transporter is spawned by InitLevelTiles.ICZ1 override)
+		u32[0xffffb172] = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// fn013fc2 override: Tails carry-in suppression         //
+//-------------------------------------------------------//
+// When starting on Knuckles' path, skip the Tails
+// carry-in and teleport P2 to Knuckles' start position.
+
+//# address-hook(0x013fc2) end(0x013ff4)
+function void fn013fc2()
+{
+	if (useSonicTailsAndKnuckles && level.start_location == 2)
+	{
+		u32 addr = 0x1e3cd8 + global.zone * 8 + global.act * 4
+		objA0.position.x.u16 = u16[addr]
+		objA0.position.y.u16 = u16[addr + 2]
+		tails.ai_routine = 0x06
+		return
+	}
+
+	base.fn013fc2()
+}
+
+
+//-------------------------------------------------------//
+// InitializeGameCharacters override                     //
+//-------------------------------------------------------//
+
+function void InitializeGameCharacters()
+{
+	// Disable isMainCharacter override during init -- character slots
+	// aren't populated yet, reading them would return garbage
+	swap_chars_ready = false
+
+	// Let the base spawn Sonic + Tails as normal
+	base.InitializeGameCharacters()
+
+	// SSZ1: hide P3 until NPC Knuckles cutscene handoff
+	ssz1_knuckles_cutscene_active = (useSonicTailsAndKnuckles && global.zone_act == 0x0a00 && checkpoint.number == 0)
+
+	// Spawn zone-specific objects
+	cnz2_water_switch_spawned = false
+	if (useSonicTailsAndKnuckles && global.zone_act == 0x0301)
+	{
+		if (checkpoint.number == 0)
+			cnz2_water_off = false
+		CNZ2.SpawnWaterSwitch()
+	}
+
+	// Now spawn Knuckles as 3rd character
+	if (useSonicTailsAndKnuckles)
+	{
+		// Don't spawn in bonus stages
+		if (global.zone_act >= 0x1300 && global.zone_act < 0x1600)
+			return
+
+		// Don't spawn in competition mode
+		if (competition_mode.active)
+			return
+
+		// Don't spawn P3 during AIZ1 intro cutscene (Sonic's story).
+		// The cutscene has its own Knuckles object who will become P3
+		// when the cutscene ends (see aiz_intro_overrides.lemon).
+		if (global.zone_act == 0x0000 && checkpoint.number == 0 && isMainCharacter(CHARACTER_SONIC))
+		{
+			aiz_intro_pending = true
+			swap_chars_ready = true
+			return
+		}
+
+		// Zero out the entire 0x4a-byte object slot
+		for (u16 i = 0; i < 0x4a; i += 2)
+		{
+			u16[P3_ADDR + i] = 0
+		}
+
+		// Set address-hooked update function for engine dispatch
+		u32[P3_ADDR] = addressof(Character.BaseUpdate.Knuckles3)
+
+		// Set base_state to INITIAL (0x00) so Character.Initialization runs.
+		// Our Initialization.shared override routes P3 through the render
+		// proxy slot so the base init gets a valid object table address.
+		u8[P3_ADDR + 0x04] = render_flag.WORLD		// render_flags
+		u8[P3_ADDR + 0x05] = 0x00					// base_state = INITIAL
+
+		// Position slightly behind and to the right of player 1
+		u16[P3_ADDR + 0x10] = u16[0xffffb000 + 0x10] + 0x20
+		u16[P3_ADDR + 0x14] = u16[0xffffb000 + 0x14]
+
+		// Set character type so init knows this is Knuckles
+		u8[P3_ADDR + 0x38] = CHARACTER_KNUCKLES
+
+		// Initialize AI state
+		knuckles3.ai_routine = 0
+		knuckles3.control_counter = 0
+		knuckles3.respawn_counter = 0
+		knuckles3.ai_jumping = 0
+		control.knuckles3 = 0
+		posbackup.offset.player3 = 0
+
+		// Set up dust cloud for 3rd character
+		u32[KNUCKLES3_DUST_ADDR] = 0x018b3e
+
+		// Apply saved swap state: if the player was controlling a different
+		// character before the level transition, re-apply that swap now.
+		// IMPORTANT: SetupCharacterAtStartPosition already loaded checkpoint
+		// data (position, sprite_attr, layer_flags) into P1. The swap would
+		// replace these with P3/P2's zeroed values, and Initialization.shared
+		// only re-sets layer_flags for fresh starts (checkpoint.number == 0).
+		// Save and restore P1's critical fields around the swap.
+		if (swap_controlled_char == CHARACTER_TAILS)
+		{
+			u16 savedPosX = u16[0xffffb000 + 0x10]
+			u16 savedPosY = u16[0xffffb000 + 0x14]
+			u16 savedSpriteAttr = u16[0xffffb000 + 0x0a]
+			u16 savedLayerFlags = u16[0xffffb000 + 0x46]
+			u8 savedFlags = u8[0xffffb000 + 0x2a]
+
+			CharacterSwap.SwapSlots(0xffffb000, 0xffffb04a)
+			CharacterSwap.FixupAfterSwap()
+
+			u16[0xffffb000 + 0x10] = savedPosX
+			u16[0xffffb000 + 0x14] = savedPosY
+			u16[0xffffb000 + 0x0a] = savedSpriteAttr
+			u16[0xffffb000 + 0x46] = savedLayerFlags
+			u8[0xffffb000 + 0x2a] = savedFlags
+
+			u16[0xffffb04a + 0x10] = savedPosX + 0x20
+			u16[0xffffb04a + 0x14] = savedPosY
+			u8[0xffffb04a + 0x46] = u8[0xffffb000 + 0x46]
+			u8[0xffffb04a + 0x47] = u8[0xffffb000 + 0x47]
+			u8[P3_ADDR + 0x46] = u8[0xffffb000 + 0x46]
+			u8[P3_ADDR + 0x47] = u8[0xffffb000 + 0x47]
+		}
+		else if (swap_controlled_char == CHARACTER_KNUCKLES)
+		{
+			u16 savedPosX = u16[0xffffb000 + 0x10]
+			u16 savedPosY = u16[0xffffb000 + 0x14]
+			u16 savedSpriteAttr = u16[0xffffb000 + 0x0a]
+			u16 savedLayerFlags = u16[0xffffb000 + 0x46]
+			u8 savedFlags = u8[0xffffb000 + 0x2a]
+
+			CharacterSwap.SwapSlots(0xffffb000, P3_ADDR)
+			CharacterSwap.FixupAfterSwap()
+
+			u16[0xffffb000 + 0x10] = savedPosX
+			u16[0xffffb000 + 0x14] = savedPosY
+			u16[0xffffb000 + 0x0a] = savedSpriteAttr
+			u16[0xffffb000 + 0x46] = savedLayerFlags
+			u8[0xffffb000 + 0x2a] = savedFlags
+
+			u16[P3_ADDR + 0x10] = savedPosX + 0x20
+			u16[P3_ADDR + 0x14] = savedPosY
+			u8[0xffffb04a + 0x46] = u8[0xffffb000 + 0x46]
+			u8[0xffffb04a + 0x47] = u8[0xffffb000 + 0x47]
+			u8[P3_ADDR + 0x46] = u8[0xffffb000 + 0x46]
+			u8[P3_ADDR + 0x47] = u8[0xffffb000 + 0x47]
+		}
+
+		// All slots populated -- enable isMainCharacter override
+		swap_chars_ready = true
+	}
+}
+
+
+//-------------------------------------------------------//
+// EntryFunctions.sharedInit override                    //
+//-------------------------------------------------------//
+// Reset swap state on new game start.
+
+function void EntryFunctions.sharedInit()
+{
+	base.EntryFunctions.sharedInit()
+	swap_controlled_char = CHARACTER_SONIC
+	swap_cooldown_timer = 0
+	swap_chars_ready = false
+	hyper_all_active = false
+	aiz_intro_pending = false
+}
+

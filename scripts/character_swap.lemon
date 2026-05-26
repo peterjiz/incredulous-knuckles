@@ -1,0 +1,323 @@
+
+//-------------------------------------------------------//
+// Character Swap System                                 //
+//-------------------------------------------------------//
+//
+// Press Y to cycle: Sonic → Tails → Knuckles → Sonic...
+//
+// Slot data swap approach: physically swap 0x4A bytes between P1
+// and target slot. Camera/input/collision follow 0xffffb000 automatically.
+//
+// Called from the BaseUpdate overrides when Y is pressed at P1.
+
+
+//-------------------------------------------------------//
+// TrySwap: attempt a character swap (returns true if swapped)
+//-------------------------------------------------------//
+
+function bool CharacterSwap.TrySwap()
+{
+	if (!useSonicTailsAndKnuckles)
+		return false
+
+	if (swap_cooldown_timer > 0)
+		return false
+
+	if (!CharacterSwap.CanSwap())
+		return false
+
+	// Find which character is currently at P1, and cycle to the next
+	u8 currentP1Char = u8[0xffffb000 + 0x38]
+
+	u32 targetAddr = 0
+	if (currentP1Char == CHARACTER_SONIC)
+	{
+		// Sonic → Tails: find where Tails is
+		targetAddr = CharacterSwap.FindCharacterSlot(CHARACTER_TAILS)
+	}
+	else if (currentP1Char == CHARACTER_TAILS)
+	{
+		// Tails → Knuckles: find where Knuckles is
+		targetAddr = CharacterSwap.FindCharacterSlot(CHARACTER_KNUCKLES)
+	}
+	else
+	{
+		// Knuckles → Sonic: find where Sonic is
+		targetAddr = CharacterSwap.FindCharacterSlot(CHARACTER_SONIC)
+	}
+
+	if (targetAddr == 0 || targetAddr == 0xffffb000)
+		return false
+
+	// Target must also be in a safe state (not hurt, dying, etc.)
+	if (u8[targetAddr + 0x05] >= base_state.HURT)
+		return false
+
+	// Save P1's position -- companions may be far from P1 (e.g., ICZ
+	// snowboard leaves Tails at the spawn point). Without this, the
+	// player teleports to wherever the companion was standing.
+	u16 savedPosX = u16[0xffffb000 + 0x10]
+	u16 savedPosY = u16[0xffffb000 + 0x14]
+
+	CharacterSwap.SwapSlots(0xffffb000, targetAddr)
+	CharacterSwap.FixupAfterSwap()
+
+	u16[0xffffb000 + 0x10] = savedPosX
+	u16[0xffffb000 + 0x14] = savedPosY
+
+	swap_cooldown_timer = SWAP_COOLDOWN_FRAMES
+	swap_controlled_char = u8[0xffffb000 + 0x38]
+	swap_hud_timer = 90		// Show HUD indicator for 1.5 seconds
+	playSound(SFX_GRAB)		// Swap success sound
+	return true
+}
+
+
+//-------------------------------------------------------//
+// Find which slot a character is currently in            //
+//-------------------------------------------------------//
+
+function u32 CharacterSwap.FindCharacterSlot(u8 character)
+{
+	if (u8[0xffffb000 + 0x38] == character)
+		return 0xffffb000
+	if (u8[0xffffb04a + 0x38] == character)
+		return 0xffffb04a
+	if (u8[P3_ADDR + 0x38] == character)
+		return P3_ADDR
+	return 0
+}
+
+
+//-------------------------------------------------------//
+// Can we swap right now?                                //
+//-------------------------------------------------------//
+
+function bool CharacterSwap.CanSwap()
+{
+	// P1 must be in normal state
+	if (u8[0xffffb000 + 0x05] != base_state.NORMAL)
+		return false
+
+	// P1 must not be in a special control state
+	if (u8[0xffffb000 + 0x2e] != 0)
+		return false
+
+	// Not during debug mode
+	if (debug_mode.state != 0)
+		return false
+
+	// Not during carry formations
+	if (tails.carrying || tails.carrying_knuckles3)
+		return false
+
+	if (knuckles3.carrying_sonic)
+		return false
+
+	// Level must have started
+	if (!global.level_started)
+		return false
+
+	return true
+}
+
+
+//-------------------------------------------------------//
+// Swap all object slot data                             //
+//-------------------------------------------------------//
+
+function void CharacterSwap.SwapSlots(u32 addrA, u32 addrB)
+{
+	// When P3 (slot 93) is involved, preserve bytes 0-3 at BOTH slots.
+	// P3 keeps 0x350100 (our address-hook). After the data swap, fix the
+	// non-P3 slot's update_address so the engine calls the right BaseUpdate.
+	bool preserveP3Hook = (addrA == P3_ADDR || addrB == P3_ADDR)
+
+	u8 i = 0
+	while (i < 0x4a)
+	{
+		// Skip protected bytes (bonus flags, shield state)
+		if (i != 0x2b && i != 0x35 && i != 0x36)
+		{
+			// Skip bytes 0-3 (update address) when P3 slot is involved
+			if (preserveP3Hook && i < 4)
+			{
+				++i
+				continue
+			}
+
+			u8 temp = u8[addrA + i]
+			u8[addrA + i] = u8[addrB + i]
+			u8[addrB + i] = temp
+		}
+		++i
+	}
+
+	// Fix the non-P3 slot's update_address to match its new character.
+	// P3 keeps 0x350100 (our address-hook). Without this fix, the engine
+	// would call the wrong BaseUpdate for the non-P3 slot.
+	if (preserveP3Hook)
+	{
+		u32 otherAddr = (addrA == P3_ADDR) ? addrB : addrA
+		u8 newChar = u8[otherAddr + 0x38]
+		if (newChar == CHARACTER_SONIC)
+			u32[otherAddr] = 0x010a94
+		else if (newChar == CHARACTER_TAILS)
+			u32[otherAddr] = 0x01365c
+		else
+			u32[otherAddr] = 0x016444
+	}
+}
+
+
+//-------------------------------------------------------//
+// Fix up state after swap                               //
+//-------------------------------------------------------//
+
+function void CharacterSwap.FixupAfterSwap()
+{
+	// Fix Tails' tails object to point to wherever Tails is now
+	u32 tailsTailsAddr = 0xffffcc0a
+	if (u32[tailsTailsAddr] != 0)
+	{
+		if (u8[0xffffb000 + 0x38] == CHARACTER_TAILS)
+			u16[tailsTailsAddr + 0x30] = 0xb000
+		else if (u8[0xffffb04a + 0x38] == CHARACTER_TAILS)
+			u16[tailsTailsAddr + 0x30] = 0xb04a
+		else if (u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+			u16[tailsTailsAddr + 0x30] = 0xcae2
+	}
+
+	// Reset shield/instashield object -- it's linked to P1 and would
+	// give the wrong character Sonic's instashield after swap
+	if (u8[0xffffb000 + 0x38] == CHARACTER_SONIC)
+	{
+		// Sonic is at P1 -- re-init instashield for Sonic
+		u32[0xffffcce8] = addressof(InstaShield.Init)
+		u16[0xffffcce8 + 0x42] = 0xb000
+	}
+	else
+	{
+		// Non-Sonic at P1 -- clear the instashield object
+		u32[0xffffcce8] = 0
+	}
+
+	// Fix dust clouds to match character at each slot
+	u32 dust1 = 0xffffcc54
+	u32 dust2 = 0xffffcc9e
+	if (u32[dust1] != 0)
+	{
+		u32 d1parent = 0xffff0000 + u16[dust1 + 0x42]
+		u8[dust1 + 0x38] = (u8[d1parent + 0x38] == CHARACTER_TAILS) ? 1 : 0
+	}
+	if (u32[dust2] != 0)
+	{
+		u32 d2parent = 0xffff0000 + u16[dust2 + 0x42]
+		u8[dust2 + 0x38] = (u8[d2parent + 0x38] == CHARACTER_TAILS) ? 1 : 0
+	}
+
+	// Handle super form during swap.
+	// When hyper_all_active, all 3 are Hyper -- preserve it.
+	// Otherwise cancel to prevent state corruption.
+	if (super.active && !hyper_all_active)
+	{
+		super.active = 0
+		u8[0xffffb000 + 0x2b] &= ~char.bonus.INVINCIBLE
+		setSpeedCapProperties(0xfffff760, false)
+		chooseFittingMusic()
+	}
+	else if (super.active && hyper_all_active)
+	{
+		// Super preserved across swap — recalculate P1's speed caps
+		// for the NEW character at P1.  setSpeedCapProperties reads
+		// char.character/char.flags from objA0, so point A0 at P1.
+		u32 savedA0 = A0
+		A0 = 0xffffb000
+		setSpeedCapProperties(0xfffff760, true)
+		A0 = savedA0
+	}
+	if (super.active.tails && !hyper_all_active)
+	{
+		super.active.tails = 0
+		u32[0xffffcd7c] = 0
+		u32[0xffffcdc6] = 0
+		u32[0xffffce10] = 0
+		u32[0xffffce5a] = 0
+		chooseFittingMusic()
+	}
+	else if (super.active.tails && hyper_all_active)
+	{
+		// Same for P2's speed caps after swap
+		u32 savedA0 = A0
+		A0 = 0xffffb04a
+		setSpeedCapProperties(0xfffffec0, true)
+		A0 = savedA0
+	}
+
+	// Fix new P1 stuck in companion-specific states after swap.
+	// If the character swapped IN to P1 was flying (TAILS_FLYING),
+	// gliding (KNUX_FLYCLIMB), wall-falling (KNUX_FALLING), or mid-
+	// transformation, those states route through special update code
+	// that doesn't respond to normal input — leaving the player
+	// stuck until they enter/exit debug mode.
+	{
+		u32 p1 = 0xffffb000
+		u8 p1state = u8[p1 + 0x20]
+		// Preserve damage/death/cutscene states — resetting these would
+		// break invuln, death animations, or cutscene sequences.
+		// 0x17 DROWNED, 0x18 DIED, 0x19 GOT_HURT_PANIC, 0x1a GOT_HURT,
+		// 0x1b FALLING_PANIC, 0x1c DISAPPEARED, 0x13 WIN_POSE, 0x14 HANGING
+		bool preserve = (p1state >= 0x17 && p1state <= 0x1c)
+		if (p1state == char.state.WIN_POSE)
+			preserve = true
+		if (p1state == char.state.HANGING)
+			preserve = true
+		if (!preserve)
+		{
+			u8[p1 + 0x20] = char.state.RUNNING
+			u8[p1 + 0x2a] &= ~char.flag.ROLLING
+			u8[p1 + 0x2e] &= ~(control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+			u8[p1 + 0x3a] = 0		// double_jump_state
+		}
+	}
+
+	// Fix companions stuck mid-air after swap.
+	// A character swapped out of P1 while jumping/rolling keeps IN_AIR
+	// and ROLLING flags. At P2/P3 the landing transition can fail because
+	// layer flags from the old slot don't match the new terrain.
+	// Force companions to a clean state so the AI can drive them.
+	u32 slots_0 = 0xffffb04a
+	u32 slots_1 = P3_ADDR
+	for (u8 si = 0; si < 2; ++si)
+	{
+		u32 s = (si == 0) ? slots_0 : slots_1
+		// Clear stuck air/rolling/transforming state
+		u8[s + 0x2a] &= ~(char.flag.IN_AIR | char.flag.ROLLING)
+		u8[s + 0x2e] &= ~(control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+		u8[s + 0x3a] = 0		// double_jump_state
+		if (u8[s + 0x20] == char.state.TRANSFORMING || u8[s + 0x20] == char.state.TAILS_TRANSFORM)
+		{
+			u8[s + 0x20] = char.state.RUNNING
+		}
+		// Sync layer flags from P1 so floor detection works
+		u8[s + 0x46] = u8[0xffffb000 + 0x46]
+		u8[s + 0x47] = u8[0xffffb000 + 0x47]
+	}
+
+	// Reset AI routines for companions so they re-sync
+	tails.ai_routine = 0x06
+	tails.control_counter = 0
+	tails.respawn_counter = 0
+
+	knuckles3.ai_routine = 0x06
+	knuckles3.control_counter = 0
+	knuckles3.respawn_counter = 0
+
+	// Clear position backups so companions don't jump to stale positions
+	u32 savedA0 = A0
+	A0 = 0xffffb04a
+	ClearPositionBackup()
+	A0 = P3_ADDR
+	ClearPositionBackup()
+	A0 = savedA0
+}

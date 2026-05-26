@@ -1,0 +1,676 @@
+
+//-------------------------------------------------------//
+// 3-Person Formation System                             //
+//-------------------------------------------------------//
+//
+// When Tails grabs anyone, the 3rd character auto-attaches:
+//   Tails grabs Knuckles3 → Sonic auto-grabs Knuckles3
+//   Tails grabs Sonic      → Knuckles3 auto-grabs Sonic
+//
+// Formation: Tails (top) → Middle → Bottom (each 0x1c apart)
+//
+// All detection runs from Character.BaseUpdate.Knuckles3
+// (guaranteed to execute every frame).
+
+
+//-------------------------------------------------------//
+// Main formation check (called from BaseUpdate.Knuckles3)
+//-------------------------------------------------------//
+
+function void Knuckles3.CheckBeingCarriedByTails()
+{
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Find where Tails actually is (could be at any slot after swap)
+	u32 tailsAddr = 0xffffb04a
+	if (u8[0xffffb000 + 0x38] == CHARACTER_TAILS)
+		tailsAddr = 0xffffb000
+	else if (u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+		tailsAddr = P3_ADDR
+
+	// Find the "other" character (not Tails, not P3) for carry chain positioning
+	// This is whoever Tails carries via the base system (the character NOT at P3 and NOT Tails)
+	u32 carriedAddr = 0xffffb000
+	if (tailsAddr == 0xffffb000)
+		carriedAddr = 0xffffb04a		// Tails at P1, carried char is at P2
+
+	// =============================================
+	// CASE 1: Tails is carrying Knuckles3
+	// Formation: Tails → Knuckles3 → Sonic
+	// =============================================
+	if (tails.carrying_knuckles3)
+	{
+		if (u8[A0 + 0x05] >= base_state.HURT)
+		{
+			Knuckles3.BreakFormation()
+			return
+		}
+
+		// Break formation if Tails stopped flying (prevents underground clipping)
+		u8 ts = u8[tailsAddr + 0x20]
+		bool tailsFlying = (ts >= char.state.TAILS_FLYDOWN && ts <= char.state.TAILS_SWIMTIRED)
+		if (!tailsFlying)
+		{
+			Knuckles3.BreakFormation()
+			return
+		}
+
+		// Update Knuckles3 position below Tails
+		u16[A0 + 0x10] = u16[tailsAddr + 0x10]
+		u16[A0 + 0x14] = u16[tailsAddr + 0x14] + FORMATION_CHAIN_OFFSET_Y
+		u8[A0 + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+		u8[A0 + 0x2a] &= ~char.flag.FACING_LEFT
+		u8 facing = u8[tailsAddr + 0x2a] & char.flag.FACING_LEFT
+		u8[A0 + 0x04] |= facing
+		u8[A0 + 0x2a] |= facing
+		s16[A0 + 0x18] = s16[tailsAddr + 0x18]
+		s16[A0 + 0x1a] = s16[tailsAddr + 0x1a]
+		tails.carried_velocity_x_k3 = s16[tailsAddr + 0x18]
+		tails.carried_velocity_y_k3 = s16[tailsAddr + 0x1a]
+
+		if (global.inv_gravity)
+		{
+			u16[A0 + 0x14] = u16[tailsAddr + 0x14] - FORMATION_CHAIN_OFFSET_Y
+			u8[A0 + 0x04] ^= render_flag.FLIP_Y
+		}
+
+		// Set Tails' carry animation (normally triggered by tails.carrying flag)
+		if (u8[tailsAddr + 0x2a] & char.flag.UNDERWATER)
+		{
+			u8[tailsAddr + 0x20] = char.state.TAILS_SWIMCARRY
+		}
+		else if (u8[tailsAddr + 0x20] >= char.state.TAILS_FLYDOWN && u8[tailsAddr + 0x20] <= char.state.TAILS_SWIMTIRED)
+		{
+			u8[tailsAddr + 0x20] = (s16[tailsAddr + 0x1a] < 0) ? char.state.TAILS_CARRYUP : char.state.TAILS_CARRYDOWN
+		}
+
+		// Animate Knuckles3's hang-on sprite (same logic as Tails.UpdateCarrySonic)
+		--u8[A0 + 0x24]
+		if (s8[A0 + 0x24] < 0)
+		{
+			u8[A0 + 0x24] = 0x0b
+			u8 frame = u8[A0 + 0x23]
+			u8 sprite = u8[0x014522 + frame]
+			if (sprite == 0xff)
+			{
+				u8[A0 + 0x23] = 0
+				sprite = u8[0x014522]
+			}
+			else
+			{
+				++u8[A0 + 0x23]
+			}
+			u8[A0 + 0x22] = sprite
+
+			D0 = u32(sprite)
+			u32 backupA0 = A0
+			SetCharacterSpritePatterns()
+			A0 = backupA0
+		}
+
+		// Collision check for Knuckles3 (middle of chain) prevents underground clipping
+		pushAll()
+		Character.CheckCollision()
+		popAll()
+
+		// P1 jump-break only if P1 is actually attached to the chain
+		if (u8[carriedAddr + 0x2e] == (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+		{
+			if (control.pad1.pressed & CONTROL_ABC)
+			{
+				Knuckles3.BreakFormation()
+				playSound(SFX_JUMP)
+				return
+			}
+		}
+
+		// P1 can join by jumping near P3 (no auto-teleport)
+		if (formation.sonic_detach_timeout > 0)
+		{
+			--formation.sonic_detach_timeout
+		}
+		else if (u8[carriedAddr + 0x2e] != (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+		{
+			if ((u8[carriedAddr + 0x2a] & char.flag.IN_AIR) && u8[carriedAddr + 0x05] < base_state.HURT && u8[carriedAddr + 0x3d] == 0)
+			{
+				u16 dx = u16[carriedAddr + 0x10] - u16[A0 + 0x10] + 0x10
+				u16 dy = u16[carriedAddr + 0x14] - u16[A0 + 0x14] + 0x08 + ((global.inv_gravity) ? 0x28 : -0x28)
+				if (dx < CARRY_GRAB_RANGE_X && dy < CARRY_GRAB_RANGE_Y)
+				{
+					s16[carriedAddr + 0x18] = 0
+					s16[carriedAddr + 0x1a] = 0
+					s16[carriedAddr + 0x1c] = 0
+					u16[carriedAddr + 0x26] = 0
+					u8[carriedAddr + 0x20] = char.state.SONIC_HANGON
+					u8[carriedAddr + 0x21] = 0
+					u8[carriedAddr + 0x23] = 0
+					u8[carriedAddr + 0x24] = 0
+					u8[carriedAddr + 0x2e] = (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+					u8[carriedAddr + 0x2a] &= ~(char.flag.FACING_LEFT | char.flag.CONTROL_LOCK)
+					u8[carriedAddr + 0x2a] |= char.flag.IN_AIR
+					u8[carriedAddr + 0x3d] = 0
+					u8[carriedAddr + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+
+					u8[carriedAddr + 0x22] = u8[0x014522]
+					D0 = u32(u8[0x014522])
+					u32 initBackup = A0
+					A0 = carriedAddr
+					SetCharacterSpritePatterns()
+					A0 = initBackup
+
+					playSound(SFX_GRAB)
+				}
+			}
+		}
+
+		// Update Sonic position/animation only if still attached
+		if (u8[carriedAddr + 0x2e] == (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+		{
+			u16[carriedAddr + 0x10] = u16[A0 + 0x10]
+			u16[carriedAddr + 0x14] = u16[A0 + 0x14] + (global.inv_gravity ? -FORMATION_CHAIN_OFFSET_Y : FORMATION_CHAIN_OFFSET_Y)
+			u8[carriedAddr + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+			u8[carriedAddr + 0x2a] &= ~char.flag.FACING_LEFT
+			u8[carriedAddr + 0x04] |= facing
+			u8[carriedAddr + 0x2a] |= facing
+			s16[carriedAddr + 0x18] = s16[A0 + 0x18]
+			s16[carriedAddr + 0x1a] = s16[A0 + 0x1a]
+			if (global.inv_gravity)
+				u8[carriedAddr + 0x04] ^= render_flag.FLIP_Y
+
+			// Animate Sonic's hang-on sprite
+			--u8[carriedAddr + 0x24]
+			if (s8[carriedAddr + 0x24] < 0)
+			{
+				u8[carriedAddr + 0x24] = 0x0b
+				u8 sFrame = u8[carriedAddr + 0x23]
+				u8 sSprite = u8[0x014522 + sFrame]
+				if (sSprite == 0xff)
+				{
+					u8[carriedAddr + 0x23] = 0
+					sSprite = u8[0x014522]
+				}
+				else
+				{
+					++u8[carriedAddr + 0x23]
+				}
+				u8[carriedAddr + 0x22] = sSprite
+				D0 = u32(sSprite)
+				u32 backupA02 = A0
+				A0 = carriedAddr
+				SetCharacterSpritePatterns()
+				A0 = backupA02
+			}
+
+			// Collision check prevents carried character from clipping underground
+			// (same as base Tails.UpdateCarrySonic line 994-997)
+			pushAll()
+			A0 = carriedAddr
+			Character.CheckCollision()
+			popAll()
+		}
+		return
+	}
+
+	// =============================================
+	// CASE 2: Tails is carrying Sonic (base game)
+	// Formation: Tails → Sonic → Knuckles3
+	// =============================================
+	if (tails.carrying)
+	{
+		if (u8[A0 + 0x05] >= base_state.HURT)
+			return
+
+		// Break chain if Tails stopped flying (prevents underground clipping)
+		u8 ts2 = u8[tailsAddr + 0x20]
+		bool tailsFlying2 = (ts2 >= char.state.TAILS_FLYDOWN && ts2 <= char.state.TAILS_SWIMTIRED)
+		if (!tailsFlying2)
+		{
+			// Release P3 at Tails' position
+			if (u8[A0 + 0x2e] == (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+			{
+				u16[A0 + 0x10] = u16[tailsAddr + 0x10]
+				u16[A0 + 0x14] = u16[tailsAddr + 0x14]
+				u8[A0 + 0x2e] = 0
+				u8[A0 + 0x2a] |= char.flag.IN_AIR
+				u8[A0 + 0x20] = char.state.RUNNING
+				s16[A0 + 0x18] = 0
+				s16[A0 + 0x1a] = 0
+				s16[A0 + 0x1c] = 0
+				knuckles3.ai_routine = 0x06
+				formation.sonic_detach_timeout = FORMATION_DETACH_TIMEOUT
+				formation.knuckles3_detach_timeout = FORMATION_DETACH_TIMEOUT
+			}
+			return
+		}
+
+		// Auto-attach Knuckles3 below Sonic (skip if recently detached)
+		if (formation.knuckles3_detach_timeout > 0)
+		{
+			--formation.knuckles3_detach_timeout
+			return
+		}
+		if (u8[A0 + 0x2e] != (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+		{
+			// Set Knuckles3 into carried state
+			s16[A0 + 0x18] = 0
+			s16[A0 + 0x1a] = 0
+			s16[A0 + 0x1c] = 0
+			u16[A0 + 0x26] = 0
+			u8[A0 + 0x20] = char.state.SONIC_HANGON
+			u8[A0 + 0x21] = 0
+			u8[A0 + 0x24] = 0
+			u8[A0 + 0x23] = 0
+			u8[A0 + 0x2e] = (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+			u8[A0 + 0x2a] &= ~(char.flag.FACING_LEFT | char.flag.CONTROL_LOCK)
+			u8[A0 + 0x2a] |= char.flag.IN_AIR
+			u8[A0 + 0x3d] = 0
+			u8[A0 + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+		}
+
+		// Update Knuckles3 position below Sonic
+		u16[A0 + 0x10] = u16[carriedAddr + 0x10]
+		u16[A0 + 0x14] = u16[carriedAddr + 0x14] + (global.inv_gravity ? -FORMATION_CHAIN_OFFSET_Y : FORMATION_CHAIN_OFFSET_Y)
+		u8[A0 + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+		u8[A0 + 0x2a] &= ~char.flag.FACING_LEFT
+		u8 facing2 = u8[carriedAddr + 0x2a] & char.flag.FACING_LEFT
+		u8[A0 + 0x04] |= facing2
+		u8[A0 + 0x2a] |= facing2
+		s16[A0 + 0x18] = s16[carriedAddr + 0x18]
+		s16[A0 + 0x1a] = s16[carriedAddr + 0x1a]
+		if (global.inv_gravity)
+			u8[A0 + 0x04] ^= render_flag.FLIP_Y
+
+		// Animate Knuckles3's hang-on sprite (grabbing Sonic's legs)
+		--u8[A0 + 0x24]
+		if (s8[A0 + 0x24] < 0)
+		{
+			u8[A0 + 0x24] = 0x0b
+			u8 kFrame = u8[A0 + 0x23]
+			u8 kSprite = u8[0x014522 + kFrame]
+			if (kSprite == 0xff)
+			{
+				u8[A0 + 0x23] = 0
+				kSprite = u8[0x014522]
+			}
+			else
+			{
+				++u8[A0 + 0x23]
+			}
+			u8[A0 + 0x22] = kSprite
+			D0 = u32(kSprite)
+			u32 backupA03 = A0
+			SetCharacterSpritePatterns()
+			A0 = backupA03
+		}
+
+		// Collision check prevents P3 from clipping underground
+		pushAll()
+		Character.CheckCollision()
+		popAll()
+		return
+	}
+
+	// =============================================
+	// SAFETY NET: If Knuckles3 still has carry flags but nobody
+	// is carrying anyone, we were in a formation that got broken
+	// without our override being called. Release ourselves.
+	// =============================================
+	if (u8[A0 + 0x2e] == (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+	{
+		u16[A0 + 0x10] = u16[0xffffb000 + 0x10]
+		u16[A0 + 0x14] = u16[0xffffb000 + 0x14]
+		u8[A0 + 0x2e] = 0
+		u8[A0 + 0x2a] |= char.flag.IN_AIR
+		u8[A0 + 0x20] = char.state.RUNNING
+		s16[A0 + 0x18] = 0
+		s16[A0 + 0x1a] = 0
+		s16[A0 + 0x1c] = 0
+		knuckles3.ai_routine = 0x06
+		// Prevent immediate re-formation
+		formation.sonic_detach_timeout = FORMATION_DETACH_TIMEOUT
+		formation.knuckles3_detach_timeout = FORMATION_DETACH_TIMEOUT
+		return
+	}
+
+	// =============================================
+	// CASE 3: Nobody is being carried -- check grab
+	// =============================================
+
+	// Decrement detach timeouts (prevents re-formation after jump-off)
+	if (formation.sonic_detach_timeout > 0)
+		--formation.sonic_detach_timeout
+	if (formation.knuckles3_detach_timeout > 0)
+		--formation.knuckles3_detach_timeout
+
+	// Don't grab if either character recently detached
+	if (formation.knuckles3_detach_timeout > 0 || formation.sonic_detach_timeout > 0)
+		return
+
+	if (tails.catch_timeout_knuckles3 != 0)
+	{
+		--tails.catch_timeout_knuckles3
+		return
+	}
+
+	// Tails must actually be flying/swimming (not just jumping)
+	// States 0x20-0x28 = TAILS_FLYDOWN through TAILS_SWIMTIRED
+	u8 tailsState = u8[tailsAddr + 0x20]
+	if (tailsState < char.state.TAILS_FLYDOWN || tailsState > char.state.TAILS_SWIMTIRED)
+		return
+
+	// Knuckles3 must be alive
+	if (u8[A0 + 0x05] >= base_state.HURT || u8[A0 + 0x3d] != 0)
+		return
+
+	if (debug_mode.state != 0)
+		return
+
+	// Proximity check (same math as Tails.CheckCatchSonic)
+	u16 dx = u16[A0 + 0x10] - u16[tailsAddr + 0x10] + 0x10
+	u16 dy = u16[A0 + 0x14] - u16[tailsAddr + 0x14] + 0x08 + ((global.inv_gravity) ? 0x28 : -0x28)
+	if (dx < CARRY_GRAB_RANGE_X && dy < CARRY_GRAB_RANGE_Y)
+	{
+		// Grab Knuckles3 (matching fn01459e setup)
+		s16[A0 + 0x18] = 0
+		s16[A0 + 0x1a] = 0
+		s16[A0 + 0x1c] = 0
+		u16[A0 + 0x26] = 0
+		u16[A0 + 0x10] = u16[tailsAddr + 0x10]
+		u16[A0 + 0x14] = u16[tailsAddr + 0x14] + FORMATION_CHAIN_OFFSET_Y
+		u8[A0 + 0x20] = char.state.SONIC_HANGON
+		u8[A0 + 0x21] = 0
+		u8[A0 + 0x24] = 0
+		u8[A0 + 0x23] = 0
+		u8[A0 + 0x2e] = (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+		u8[A0 + 0x2a] &= ~(char.flag.FACING_LEFT | char.flag.CONTROL_LOCK)
+		u8[A0 + 0x2a] |= char.flag.IN_AIR
+		u8[A0 + 0x3d] = 0
+		u8[A0 + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+		u8 facing3 = u8[tailsAddr + 0x2a] & char.flag.FACING_LEFT
+		u8[A0 + 0x04] |= facing3
+		u8[A0 + 0x2a] |= facing3
+		tails.carried_velocity_x_k3 = s16[tailsAddr + 0x18]
+		tails.carried_velocity_y_k3 = s16[tailsAddr + 0x1a]
+		s16[A0 + 0x18] = s16[tailsAddr + 0x18]
+		s16[A0 + 0x1a] = s16[tailsAddr + 0x1a]
+
+		if (global.inv_gravity)
+		{
+			u16[A0 + 0x14] -= 0x38
+			u8[A0 + 0x04] ^= render_flag.FLIP_Y
+		}
+
+		playSound(SFX_GRAB)
+		tails.carrying_knuckles3 = 1
+		// NOTE: Don't set tails.carrying -- that would make the base code
+		// try to carry Sonic (A1=0xffffb000). We handle Tails' animation ourselves.
+	}
+}
+
+
+//-------------------------------------------------------//
+// Break the entire formation                            //
+//-------------------------------------------------------//
+
+function void Knuckles3.BreakFormation()
+{
+	// Find where Tails actually is
+	u32 tailsAddr = 0xffffb04a
+	if (u8[0xffffb000 + 0x38] == CHARACTER_TAILS)
+		tailsAddr = 0xffffb000
+	else if (u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+		tailsAddr = P3_ADDR
+
+	// Move both characters UP to Tails' position before releasing.
+	if (tails.carrying_knuckles3)
+	{
+		u16[A0 + 0x10] = u16[tailsAddr + 0x10]
+		u16[A0 + 0x14] = u16[tailsAddr + 0x14]
+		u8[A0 + 0x2e] = 0
+		u8[A0 + 0x2a] |= char.flag.IN_AIR
+		u8[A0 + 0x20] = char.state.RUNNING
+		s16[A0 + 0x18] = 0
+		s16[A0 + 0x1a] = 0
+		s16[A0 + 0x1c] = 0
+		tails.carrying_knuckles3 = 0
+		tails.catch_timeout_knuckles3 = FORMATION_DETACH_TIMEOUT
+	}
+
+	// Release Sonic only if actually attached
+	if (u8[0xffffb000 + 0x2e] == (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE))
+	{
+		u16[0xffffb000 + 0x10] = u16[tailsAddr + 0x10]
+		u16[0xffffb000 + 0x14] = u16[tailsAddr + 0x14]
+		u8[0xffffb000 + 0x2e] = 0
+		u8[0xffffb000 + 0x2a] |= char.flag.IN_AIR
+	}
+
+	knuckles3.carrying_sonic = 0
+	knuckles3.catch_timeout_sonic = FORMATION_DETACH_TIMEOUT
+
+	// Prevent immediate re-formation after any break
+	formation.sonic_detach_timeout = FORMATION_DETACH_TIMEOUT
+	formation.knuckles3_detach_timeout = FORMATION_DETACH_TIMEOUT
+}
+
+
+//-------------------------------------------------------//
+// Knuckles3 glide carry detection                       //
+//-------------------------------------------------------//
+
+function void Knuckles3.CheckGlideCarry()
+{
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Only Knuckles can glide-carry (after swap, any character may be at P3)
+	if (u8[A0 + 0x38] != CHARACTER_KNUCKLES)
+		return
+
+	if (u8[A0 + 0x3a] == 1)
+	{
+		if (knuckles3.carrying_sonic == 0)
+		{
+			Knuckles3.CheckCatchSonic()
+		}
+	}
+	else if (knuckles3.carrying_sonic)
+	{
+		A1 = 0xffffb000
+		u8[A1 + 0x2e] = 0
+		u8[A1 + 0x2a] |= char.flag.IN_AIR
+		s16[A1 + 0x1a] = -0x100
+		knuckles3.carrying_sonic = 0
+		knuckles3.catch_timeout_sonic = FORMATION_DETACH_TIMEOUT
+	}
+}
+
+
+function void Knuckles3.CheckCatchSonic()
+{
+	A1 = 0xffffb000
+
+	if (knuckles3.catch_timeout_sonic != 0)
+	{
+		--knuckles3.catch_timeout_sonic
+		return
+	}
+
+	if ((u8[A1 + 0x2a] & char.flag.IN_AIR) == 0)
+		return
+
+	if (control.pad1.state & CONTROL_DOWN)
+		return
+
+	u16 dx = u16[A1 + 0x10] - u16[A0 + 0x10] + 0x10
+	u16 dy = u16[A1 + 0x14] - u16[A0 + 0x14] + 0x08 + ((global.inv_gravity) ? 0x28 : -0x28)
+	if (dx < 0x20 && dy < 0x18)
+	{
+		if (u8[A1 + 0x05] < base_state.HURT && u8[A1 + 0x2e] == 0 && u8[A1 + 0x3d] == 0 && debug_mode.state == 0)
+		{
+			s16[A1 + 0x18] = 0
+			s16[A1 + 0x1a] = 0
+			s16[A1 + 0x1c] = 0
+			u8[A1 + 0x20] = char.state.SONIC_HANGON
+			u8[A1 + 0x2e] = (control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+			u8[A1 + 0x2a] &= ~(char.flag.FACING_LEFT | char.flag.CONTROL_LOCK)
+			u8[A1 + 0x2a] |= char.flag.IN_AIR
+			u8[A1 + 0x3d] = 0
+
+			playSound(SFX_GRAB)
+			knuckles3.carrying_sonic = 1
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Knuckles3 carrying Sonic (position update)            //
+//-------------------------------------------------------//
+
+function void Knuckles3.UpdateCarrySonic()
+{
+	A1 = 0xffffb000
+
+	if (u8[A1 + 0x05] >= base_state.HURT)
+	{
+		u8[A1 + 0x2e] = 0
+		knuckles3.carrying_sonic = 0
+		knuckles3.catch_timeout_sonic = FORMATION_DETACH_TIMEOUT
+		return
+	}
+
+	if (control.pad1.pressed & CONTROL_ABC)
+	{
+		u8[A1 + 0x2e] = 0
+		knuckles3.carrying_sonic = 0
+		knuckles3.catch_timeout_sonic = 18
+		s16[A1 + 0x1a] = -0x380
+		u8[A1 + 0x20] = char.state.ROLLING
+		u8[A1 + 0x2a] |= (char.flag.IN_AIR | char.flag.ROLLING)
+		u8[A1 + 0x40] = 0x01
+		playSound(SFX_JUMP)
+		return
+	}
+
+	u16[A1 + 0x10] = u16[A0 + 0x10]
+	u16[A1 + 0x14] = u16[A0 + 0x14] + (global.inv_gravity ? -FORMATION_CHAIN_OFFSET_Y : FORMATION_CHAIN_OFFSET_Y)
+	u8[A1 + 0x04] &= ~(render_flag.FLIP_X | render_flag.FLIP_Y)
+	u8[A1 + 0x2a] &= ~char.flag.FACING_LEFT
+	u8 facing = u8[A0 + 0x2a] & char.flag.FACING_LEFT
+	u8[A1 + 0x04] |= facing
+	u8[A1 + 0x2a] |= facing
+	s16[A1 + 0x18] = s16[A0 + 0x18]
+	s16[A1 + 0x1a] = s16[A0 + 0x1a]
+	if (global.inv_gravity)
+		u8[A1 + 0x04] ^= render_flag.FLIP_Y
+}
+
+
+//-------------------------------------------------------//
+// Tails.UpdateCarrySonic override                       //
+//-------------------------------------------------------//
+// The base is called with A1 = 0xffffb000 hardcoded.
+// After swap, Tails might BE at 0xffffb000. In that case,
+// redirect A1 to the nearest companion (P2 first, then P3).
+
+function void Tails.UpdateCarrySonic()
+{
+	if (useSonicTailsAndKnuckles && A0 == 0xffffb000)
+	{
+		// Tails is at P1 -- carry target should be P2 (not self)
+		A1 = 0xffffb04a
+		A2 = 0xfffff73e
+		D0.u16 = control.pad1
+
+		// Fix velocity sync: the base function has hardcoded
+		// s16[0xffffb000 + 0x18] = char.velocity.x (line 989)
+		// which writes to Tails (self) instead of the carried character.
+		// Pre-sync the carried character's velocity so the base's
+		// mismatch check (objA1.velocity.x == tails.carried_velocity_x) passes.
+		if (tails.carrying)
+		{
+			s16[A1 + 0x18] = tails.carried_velocity_x
+			s16[A1 + 0x1a] = tails.carried_velocity_y
+		}
+	}
+
+	base.Tails.UpdateCarrySonic()
+
+	// Post-fix: when Tails is at P1, the base's collision check hardcodes
+	// A0 = 0xffffb000 (Tails self), so the CARRIED character (at P2) gets
+	// no collision. Run it here to prevent P2 from clipping underground.
+	if (useSonicTailsAndKnuckles && A0 == 0xffffb000 && tails.carrying)
+	{
+		// Sync velocity (base wrote to 0xffffb000 = Tails, not the carried P2)
+		s16[A1 + 0x18] = char.velocity.x
+		s16[A1 + 0x1a] = char.velocity.y
+		tails.carried_velocity_x = char.velocity.x
+		tails.carried_velocity_y = char.velocity.y
+
+		// Collision check for the carried character (P2)
+		pushAll()
+		A0 = A1		// A1 = carried character address (0xffffb04a)
+		Character.CheckCollision()
+		popAll()
+	}
+}
+
+
+//-------------------------------------------------------//
+// Tails.CheckCatchSonic override                        //
+//-------------------------------------------------------//
+// Same issue: when Tails is at P1, the grab target must
+// be redirected to a companion slot.
+
+function void Tails.CheckCatchSonic()
+{
+	if (useSonicTailsAndKnuckles && A0 == 0xffffb000)
+	{
+		A1 = 0xffffb04a
+		A2 = 0xfffff73e
+	}
+
+	base.Tails.CheckCatchSonic()
+}
+
+
+//-------------------------------------------------------//
+// Drop everything when Tails stops flying               //
+//-------------------------------------------------------//
+
+function void Tails.CheckDropSonic()
+{
+	bool wasCarryingSonic = (tails.carrying != 0)
+	bool wasCarryingKnuckles = (tails.carrying_knuckles3 != 0)
+
+	base.Tails.CheckDropSonic()
+
+	// Find where Tails actually is
+	u32 tailsAddr = 0xffffb04a
+	if (u8[0xffffb000 + 0x38] == CHARACTER_TAILS)
+		tailsAddr = 0xffffb000
+	else if (u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+		tailsAddr = P3_ADDR
+
+	// Break Knuckles3 formation when Tails lands/stops flying
+	if (wasCarryingKnuckles)
+	{
+		Knuckles3.BreakFormation()
+	}
+
+	// If Tails just dropped Sonic (base game), also release Knuckles3 from chain
+	if (wasCarryingSonic && !tails.carrying)
+	{
+		// Move Knuckles3 to Tails' position before releasing
+		u16[P3_ADDR + 0x10] = u16[tailsAddr + 0x10]
+		u16[P3_ADDR + 0x14] = u16[tailsAddr + 0x14]
+		u8[P3_ADDR + 0x2e] = 0
+		u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+		u8[P3_ADDR + 0x20] = char.state.RUNNING
+		s16[P3_ADDR + 0x18] = 0
+		s16[P3_ADDR + 0x1a] = 0
+		s16[P3_ADDR + 0x1c] = 0
+	}
+}

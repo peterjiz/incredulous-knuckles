@@ -1,0 +1,1085 @@
+
+//-------------------------------------------------------//
+// Character Swap System: Overrides                      //
+//-------------------------------------------------------//
+//
+// State table selection uses objA0.update_address (NOT
+// char.character) because char.character is uninitialized (0)
+// on the first frame -- it gets set by the Initialization
+// function that the state table dispatch is supposed to call.
+//
+// After a swap, SwapSlots fixes the non-P3 slot's update_address
+// to match the new character, so re-reading objA0.update_address
+// after the swap gives the correct state table.
+
+
+//-------------------------------------------------------//
+// Helpers                                               //
+//-------------------------------------------------------//
+
+function u32 GetStateTableForCharacter(u8 character)
+{
+	if (character == CHARACTER_SONIC)
+		return 0x010aec
+	if (character == CHARACTER_TAILS)
+		return 0x0136bc
+	return 0x01649c		// Knuckles
+}
+
+function bool CharacterSwap.TrySwapWithSound()
+{
+	if (CharacterSwap.TrySwap())
+		return true
+	playSound(SFX_CLICK)		// Swap fail sound
+	return false
+}
+
+function u32 GetStateTableForUpdateAddress()
+{
+	if (objA0.update_address == 0x010a94)
+		return 0x010aec
+	if (objA0.update_address == 0x01365c)
+		return 0x0136bc
+	return 0x01649c
+}
+
+
+//-------------------------------------------------------//
+// isMainCharacter override                              //
+//-------------------------------------------------------//
+// After swap, the character at P1 may differ from what
+// global.characters says. Many ability checks (glide, fly,
+// insta-shield) use isMainCharacter() to gate behavior.
+// We override it to check who is actually at P1.
+//
+// CRITICAL: Only active after swap_chars_ready is set.
+// During InitializeGameCharacters, the character slots
+// aren't populated yet -- using base ensures Tails spawns
+// correctly. getMainCharacter/getSecondCharacter are NOT
+// overridden for the same reason.
+
+function bool isMainCharacter(u8 character)
+{
+	if (useSonicTailsAndKnuckles && swap_chars_ready)
+		return (u8[0xffffb000 + 0x38] == character)
+	return base.isMainCharacter(character)
+}
+
+
+//-------------------------------------------------------//
+// BaseUpdate shared helpers                             //
+//-------------------------------------------------------//
+// Extracted from Character.BaseUpdate.Sonic/Tails/Knuckles
+// to eliminate ~80% code duplication. Each character's
+// BaseUpdate is now a thin wrapper around these helpers.
+
+global s8 _bu_savedOverride
+global u16 _bu_savedP1
+global u16 _bu_savedTails
+
+function u32 BaseUpdate.Setup(u32 defaultStateTable)
+{
+	if (A0 == 0xffffb000)
+	{
+		A4 = 0xfffff760
+		A5 = 0xffffee2c
+		A6 = 0xffffcc54
+	}
+	else
+	{
+		A4 = 0xfffffec0
+		A5 = 0xffffee2e
+		A6 = 0xffffcc9e
+	}
+
+	_bu_savedOverride = player1.control_override
+	_bu_savedP1 = control.player1
+	_bu_savedTails = control.tails
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+	{
+		player1.control_override = 1
+	}
+	if (useSonicTailsAndKnuckles)
+	{
+		Character.ControlUpdate()
+	}
+
+	u32 stateTable = defaultStateTable
+	if (useSonicTailsAndKnuckles && A0 == 0xffffb000)
+	{
+		if (swap_cooldown_timer > 0)
+			--swap_cooldown_timer
+		if (Input.buttonPressed(BUTTON_Y) && (u8[0xffffb000 + 0x2a] & char.flag.IN_AIR) == 0)
+		{
+			if (CharacterSwap.TrySwapWithSound())
+				stateTable = GetStateTableForUpdateAddress()
+		}
+	}
+	return stateTable
+}
+
+function void BaseUpdate.Restore()
+{
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+	{
+		player1.control_override = _bu_savedOverride
+		control.player1 = _bu_savedP1
+		control.tails = _bu_savedTails
+	}
+}
+
+
+//-------------------------------------------------------//
+// Character.BaseUpdate.Sonic                            //
+//-------------------------------------------------------//
+
+//# address-hook(0x010a94) end(0x010ae8)
+function void Character.BaseUpdate.Sonic()
+{
+	u32 stateTable = BaseUpdate.Setup(0x010aec)
+
+	if (debug_mode.state == 0 || A0 != 0xffffb000)
+	{
+		call tableLookupAddress(stateTable, char.base_state)
+	}
+	else if (updateDebugModeRegular())
+	{
+		UpdateSonicSpritePatterns()
+		DrawObject()
+	}
+
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+	{
+		if ((char.control_flags & (control_flag.DISABLE_INTERACTION | 0x20)) == 0)
+		{
+			Character.CheckCollisionsWithDynamicObjects()
+		}
+	}
+
+	BaseUpdate.Restore()
+}
+
+
+//-------------------------------------------------------//
+// Character.BaseUpdate.Tails                            //
+//-------------------------------------------------------//
+
+//# address-hook(0x01365c) end(0x0136b8)
+function void Character.BaseUpdate.Tails()
+{
+	u32 stateTable = BaseUpdate.Setup(0x0136bc)
+
+	if (debug_mode.state == 0 || A0 != 0xffffb000)
+	{
+		call tableLookupAddress(stateTable, char.base_state)
+	}
+	else if (updateDebugModeRegular())
+	{
+		UpdateTailsSpritePatterns()
+		DrawObject()
+	}
+
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+	{
+		ERZFlight.CompanionFollow(A0, -0x18, 0x10)
+	}
+
+	BaseUpdate.Restore()
+}
+
+
+//-------------------------------------------------------//
+// Character.BaseUpdate.Knuckles                         //
+//-------------------------------------------------------//
+
+//# address-hook(0x016444) end(0x016498)
+function void Character.BaseUpdate.Knuckles()
+{
+	u32 stateTable = BaseUpdate.Setup(0x01649c)
+
+	if (debug_mode.state == 0 || A0 != 0xffffb000)
+	{
+		call tableLookupAddress(stateTable, char.base_state)
+	}
+	else if (updateDebugModeRegular())
+	{
+		UpdateKnucklesSpritePatterns()
+		DrawObject()
+	}
+
+	BaseUpdate.Restore()
+}
+
+
+//-------------------------------------------------------//
+// Character.BaseUpdate.Knuckles3 (P3, slot 93)          //
+//-------------------------------------------------------//
+
+// P3 at slot 93 — engine dispatches via address-hook like any object.
+//# address-hook(0x350100)
+function void Character.BaseUpdate.Knuckles3()
+{
+	if (ssz1_knuckles_cutscene_active || hpz_npc_cutscene_active)
+	{
+		u8[P3_ADDR + 0x04] &= ~render_flag.VISIBLE
+		return
+	}
+
+	A4 = 0xfffff760
+	A5 = 0x81830e
+	A6 = KNUCKLES3_DUST_ADDR
+
+	u16 savedControlP1 = control.player1
+	u16 savedControlPad1 = control.pad1
+	u16 savedControlTails = control.tails
+
+	u32 stateTable = GetStateTableForCharacter(char.character)
+
+	// When DISABLE_UPDATE is set (respawn/GlideIn), the state table dispatch
+	// skips the movement dispatch, which also skips ControlUpdate, which also
+	// skips the AI. The GlideIn routine can never run to clear the flags.
+	// Fix: run the P3 AI directly when the normal path is blocked.
+	if (char.control_flags & control_flag.DISABLE_UPDATE)
+	{
+		Character.Knuckles3AI.Update()
+		control.player1 = control.knuckles3
+		control.tails = control.knuckles3
+	}
+
+	call tableLookupAddress(stateTable, char.base_state)
+
+	P3.CheckPlatformRelease()
+
+	ERZFlight.CompanionFollow(P3_ADDR, -0x18, -0x10)
+	ERZFlight.CompanionFollow(0xffffb04a, -0x18, 0x10)
+
+	control.player1 = savedControlP1
+	control.pad1 = savedControlPad1
+	control.tails = savedControlTails
+
+	// Drop carried character if P3 got hurt or died
+	if (char.base_state >= base_state.HURT && knuckles3.carrying_sonic)
+	{
+		u8[0xffffb000 + 0x2e] = 0
+		u8[0xffffb000 + 0x2a] |= char.flag.IN_AIR
+		knuckles3.carrying_sonic = 0
+		knuckles3.catch_timeout_sonic = 60
+	}
+
+	if (char.character == CHARACTER_KNUCKLES)
+		Knuckles3.CheckGlideCarry()
+
+	Knuckles3.CheckBeingCarriedByTails()
+
+	if (knuckles3.carrying_sonic)
+		Knuckles3.UpdateCarrySonic()
+
+	if (!tails.carrying_knuckles3)
+	{
+		u32 A1backup = A1
+		A1 = 0xffffb000
+		float distX = float(objA1.position.x.u16) - float(objA0.position.x.u16)
+		float distY = float(objA1.position.y.u16) - float(objA0.position.y.u16)
+		float d = Math.sqrt(distX * distX + distY * distY)
+		A1 = A1backup
+
+		if (d > 600.0)
+		{
+			char.base_state = base_state.NORMAL
+			RespawnKnuckles3()
+		}
+	}
+
+	// P3 is at slot 93 (not a character slot). The engine only auto-renders
+	// slots 0-1. Call DrawObject so P3 enters the priority list and gets
+	// rendered via Standalone.onWriteToSpriteTable during the render phase.
+	DrawObject()
+}
+
+
+//-------------------------------------------------------//
+// onCharacterPressedJumpInMidAir override               //
+//-------------------------------------------------------//
+// Base Tails Assist code hardcodes P2 (0xffffb04a) for all
+// Tails references. After swap cycles Tails may be at P3.
+// When Up is held (the Tails Assist trigger), move Tails
+// from P3 to P2 so the base code can find him.
+// The base already balances Tails Assist vs Knuckles' glide
+// (character.lemon:2889), so we don't gate on character type.
+
+function bool onCharacterPressedJumpInMidAir(u8 input_state, u8 input_pressed)
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		if (A0 != 0xffffb000)
+			return true
+
+		// Tails at P1: no Tails Assist (player IS Tails), allow normal fly
+		if (char.character == CHARACTER_TAILS)
+			return true
+
+		// If Tails ended up at P3 after swaps, move him to P2 where
+		// the base Tails Assist code expects her.
+		if ((input_state & CONTROL_UP) && u8[P3_ADDR + 0x38] == CHARACTER_TAILS)
+		{
+			CharacterSwap.SwapSlots(0xffffb04a, P3_ADDR)
+
+			u16 tmpAI = tails.ai_routine
+			u16 tmpCC = tails.control_counter
+			u16 tmpRC = tails.respawn_counter
+			tails.ai_routine = knuckles3.ai_routine
+			tails.control_counter = knuckles3.control_counter
+			tails.respawn_counter = knuckles3.respawn_counter
+			knuckles3.ai_routine = tmpAI
+			knuckles3.control_counter = tmpCC
+			knuckles3.respawn_counter = tmpRC
+
+			if (u32[0xffffcc0a] != 0)
+				u16[0xffffcc0a + 0x30] = 0xb04a
+
+			u32 savedA0 = A0
+			A0 = 0xffffb04a
+			ClearPositionBackup()
+			A0 = P3_ADDR
+			ClearPositionBackup()
+			A0 = savedA0
+		}
+	}
+	return base.onCharacterPressedJumpInMidAir(input_state, input_pressed)
+}
+
+
+//-------------------------------------------------------//
+// Character.ControlUpdate                               //
+//-------------------------------------------------------//
+// Position-based input routing.
+// P1 (0xffffb000) = player pad input
+// P2 (0xffffb04a) = Tails AI
+// P3 (P3_ADDR, slot 93) = Knuckles3 AI
+// After swap, ANY character can be at ANY slot.
+
+function void Character.ControlUpdate()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.Character.ControlUpdate()
+		return
+	}
+
+	if (A0 == 0xffffb000)
+	{
+		// P1: player-controlled via pad1
+		if (player1.control_override == 0)
+		{
+			control.player1 = control.pad1
+			if (char.character == CHARACTER_TAILS)
+				control.tails = control.pad1
+		}
+		else if (char.character == CHARACTER_TAILS)
+		{
+			control.tails = control.player1
+		}
+
+		ERZFlight.CheckCancel()
+	}
+	else if (A0 == 0xffffb04a)
+	{
+		// P2: always AI-controlled in 3-character mode.
+		// Don't read control.pad2 -- second controller should NOT
+		// override the AI companions.
+		if (player2.control_override >= 0 && competition_mode.active == 0)
+		{
+			Character.TailsAI.Update()
+		}
+		// If a non-Tails character is at P2, copy tails controls into player1
+		// (Sonic/Knuckles movement reads control.player1)
+		// NOTE: Do NOT write to control.pad1 -- it's the raw hardware input.
+		// Overwriting it corrupts P1's input on the next frame (kills Knuckles' glide).
+		if (char.character != CHARACTER_TAILS)
+		{
+			control.player1 = control.tails
+		}
+	}
+	else if (A0 == P3_ADDR)
+	{
+		// P3: AI-controlled via Knuckles3 AI
+		Character.Knuckles3AI.Update()
+		control.player1 = control.knuckles3
+		control.tails = control.knuckles3
+	}
+}
+
+
+//-------------------------------------------------------//
+// UpdateNormalState overrides                            //
+//-------------------------------------------------------//
+// UpdateNormalState overrides removed — ControlUpdate moved to
+// BaseUpdate before state table dispatch.  Avoids adding a layer
+// in the override chain that other mods call through via base.
+
+
+//-------------------------------------------------------//
+// ERZ Flight companion follow                           //
+//-------------------------------------------------------//
+// When the ERZ Flight Revisited mod has P1 flying,
+// make P2 and P3 follow in formation.
+
+global bool erz_flight_mode_off
+global s64 erz_saved_sf
+global s64 erz_saved_tf
+global s64 erz_saved_kf
+global s64 erz_saved_esf
+
+function void ERZFlight.CheckCancel()
+{
+	if (option.erz_flight_cancel == 0)
+		return
+
+	if (debug_mode.state != 0)
+		return
+
+	s64 flying = System.getGlobalVariableValueByName("IsFlying")
+
+	if (control.player1.pressed & 0x40)
+	{
+		if (flying != 0)
+		{
+			System.setGlobalVariableValueByName("IsFlying", 0)
+			System.setGlobalVariableValueByName("StartedFlight", 0)
+
+			u8[0xffffb000 + 0x2a] |= 0x02
+			u8[0xffffb000 + 0x2a] &= ~0x04
+			u8[0xffffb000 + 0x20] = 0x02
+			u8[0xffffb000 + 0x2f] = 0
+			u8[0xffffb000 + 0x40] = 1
+			s16[0xffffb000 + 0x1c] = s16[0xffffb000 + 0x18]
+
+			ERZFlight.SetModeOff()
+		}
+		else if (!erz_flight_mode_off)
+		{
+			ERZFlight.SetModeOff()
+		}
+		else
+		{
+			ERZFlight.SetModeOn()
+		}
+
+		control.player1.pressed &= ~0x40
+		control.player1.state &= ~0x40
+		control.pad1.pressed &= ~0x40
+		control.pad1.state &= ~0x40
+	}
+
+	if (erz_flight_mode_off && flying != 0)
+	{
+		System.setGlobalVariableValueByName("IsFlying", 0)
+		System.setGlobalVariableValueByName("StartedFlight", 0)
+	}
+}
+
+function void ERZFlight.SetModeOff()
+{
+	erz_flight_mode_off = true
+	erz_saved_sf = System.getGlobalVariableValueByName("SFEnabled")
+	erz_saved_tf = System.getGlobalVariableValueByName("TFEnabled")
+	erz_saved_kf = System.getGlobalVariableValueByName("KFEnabled")
+	erz_saved_esf = System.getGlobalVariableValueByName("ESFEnabled")
+	System.setGlobalVariableValueByName("SFEnabled", 0)
+	System.setGlobalVariableValueByName("TFEnabled", 0)
+	System.setGlobalVariableValueByName("KFEnabled", 0)
+	System.setGlobalVariableValueByName("ESFEnabled", 0)
+}
+
+function void ERZFlight.SetModeOn()
+{
+	erz_flight_mode_off = false
+	System.setGlobalVariableValueByName("SFEnabled", erz_saved_sf)
+	System.setGlobalVariableValueByName("TFEnabled", erz_saved_tf)
+	System.setGlobalVariableValueByName("KFEnabled", erz_saved_kf)
+	System.setGlobalVariableValueByName("ESFEnabled", erz_saved_esf)
+}
+
+function bool ERZFlight.CompanionFollow(u32 addr, s16 offsetX, s16 offsetY)
+{
+	if (!useSonicTailsAndKnuckles)
+		return false
+
+	s64 flying = System.getGlobalVariableValueByName("IsFlying")
+	bool inDDZ = (global.zone == 0x0c)
+	if (flying == 0 && !inDDZ)
+		return false
+
+	u16 p1x = u16[0xffffb000 + 0x10]
+	u16 p1y = u16[0xffffb000 + 0x14]
+
+	s16 targetX = s16(p1x) + offsetX
+	s16 targetY = s16(p1y) + offsetY
+
+	s16 dx = targetX - s16(u16[addr + 0x10])
+	s16 dy = targetY - s16(u16[addr + 0x14])
+
+	u16[addr + 0x10] = u16(s16(u16[addr + 0x10]) + dx / 4)
+	u16[addr + 0x14] = u16(s16(u16[addr + 0x14]) + dy / 4)
+
+	u16[addr + 0x18] = u16[0xffffb000 + 0x18]
+	u16[addr + 0x1a] = u16[0xffffb000 + 0x1a]
+	u8[addr + 0x2a] |= 0x02
+	u8[addr + 0x2a] &= ~0x04
+	u8[addr + 0x20] = char.state.RUNNING2
+
+	bool p1FacingLeft = (u8[0xffffb000 + 0x2a] & 0x01) != 0
+	if (p1FacingLeft)
+	{
+		u8[addr + 0x2a] |= 0x01
+		s16[addr + 0x1c] = -0x0d00
+	}
+	else
+	{
+		u8[addr + 0x2a] &= ~0x01
+		s16[addr + 0x1c] = 0x0d00
+	}
+
+	if (super.active != 0)
+	{
+		super.active.tails = super.active
+		hyper_all_active = true
+	}
+
+	return true
+}
+
+
+//-------------------------------------------------------//
+// updateDebugModeInput override                         //
+//-------------------------------------------------------//
+
+function bool updateDebugModeInput(bool playingAsTails)
+{
+	// Only P1 should process debug mode input.
+	// Without this, P2 detects the same B press as P1 on the same frame:
+	// P1 exits debug mode (state=0), then P2 re-enters (state=1) → stuck.
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+		return false
+	return base.updateDebugModeInput(playingAsTails)
+}
+
+
+//-------------------------------------------------------//
+// Character.Initialization.shared override              //
+//-------------------------------------------------------//
+
+function void Character.Initialization.shared(u8 character)
+{
+	u16 savedCheckpointX = checkpoint.x
+	u16 savedCheckpointY = checkpoint.y
+	u16 savedCheckpointSpriteAttr = checkpoint.sprite_attr
+	u16 savedCheckpointLayerFlags = checkpoint.layer_flags
+
+	base.Character.Initialization.shared(character)
+
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+	{
+		checkpoint.x = savedCheckpointX
+		checkpoint.y = savedCheckpointY
+		checkpoint.sprite_attr = savedCheckpointSpriteAttr
+		checkpoint.layer_flags = savedCheckpointLayerFlags
+
+		char.render_flags |= render_flag.VISIBLE
+
+		u16 palette
+		if (character == CHARACTER_TAILS)
+			palette = sprite_attribute.PALETTE.LINE2
+		else if (character == CHARACTER_KNUCKLES)
+			palette = sprite_attribute.PALETTE.LINE3
+		else
+			palette = sprite_attribute.PALETTE.LINE1
+
+		char.sprite_attributes = (char.sprite_attributes & sprite_attribute.VRAM) | (u16[0xffffb000 + 0x0a] & sprite_attribute.PRIORITY) | palette
+		char.layer_flags = u16[0xffffb000 + 0x46]
+
+		knuckles3.control_counter = 0
+		knuckles3.respawn_counter = 0
+		knuckles3.ai_routine = 0
+		knuckles3.ai_jumping = 0
+		control.knuckles3 = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// WriteToPositionBackup override                        //
+//-------------------------------------------------------//
+
+function void Character.WriteToPositionBackup()
+{
+	base.Character.WriteToPositionBackup()
+
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+	{
+		if (competition_mode.active == 0)
+		{
+			u16 offset = posbackup.offset.player3
+			u16[0x818100 + offset]     = char.position.x.u16
+			u16[0x818100 + offset + 2] = char.position.y.u16
+			posbackup.offset.player3 = (posbackup.offset.player3 + 4) & 0xfc
+			u16[0x818200 + offset]     = control.knuckles3
+			u8[0x818200 + offset + 2]  = char.flags
+			u8[0x818200 + offset + 3]  = u8[A0 + 0x0a]
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// ClearPositionBackup override                          //
+//-------------------------------------------------------//
+
+function void ClearPositionBackup()
+{
+	base.ClearPositionBackup()
+
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+	{
+		for (u16 offset = 0; offset < 0x100; offset += 4)
+		{
+			u16[0x818100 + offset]     = char.position.x.u16
+			u16[0x818100 + offset + 2] = char.position.y.u16
+			u32[0x818200 + offset]     = 0
+		}
+		posbackup.offset.player3 = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// Character.CheckDiedStateEnd override                  //
+//-------------------------------------------------------//
+
+function void Character.CheckDiedStateEnd()
+{
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+	{
+		// ANY companion (P2 or P3) should respawn, not trigger game over.
+		// Only P1 (0xffffb000) causes restart.
+		// After swap, Sonic can be at P2/P3 -- his death shouldn't end the game.
+		char.spindash = 0
+		u16 deathY = camera.position.y.u16
+		if (global.inv_gravity)
+		{
+			deathY -= 0x10
+			if (s16(char.position.y.u16) > s16(deathY))
+				return
+		}
+		else
+		{
+			deathY += 0x100
+			if (s16(char.position.y.u16) <= s16(deathY))
+				return
+		}
+
+		// Respawn the companion
+		if (A0 == P3_ADDR)
+		{
+			char.base_state = base_state.NORMAL
+			RespawnKnuckles3()
+		}
+		else
+		{
+			// P2 companion -- use Tails respawn (works for any character at P2)
+			char.base_state = base_state.NORMAL
+			RespawnTails()
+		}
+		return
+	}
+	base.Character.CheckDiedStateEnd()
+}
+
+
+//-------------------------------------------------------//
+// Character.UpdateRestartDelay override                 //
+//-------------------------------------------------------//
+
+function void Character.UpdateRestartDelay()
+{
+	if (useSonicTailsAndKnuckles && A0 != 0xffffb000)
+	{
+		// Don't let ANY companion trigger level restart
+		if (A0 == P3_ADDR)
+		{
+			char.base_state = base_state.NORMAL
+			RespawnKnuckles3()
+		}
+		else
+		{
+			char.base_state = base_state.NORMAL
+			RespawnTails()
+		}
+		return
+	}
+	base.Character.UpdateRestartDelay()
+}
+
+
+//-------------------------------------------------------//
+// UpdateDiedState overrides for all characters at P3    //
+//-------------------------------------------------------//
+
+function void Character.UpdateDiedState.Sonic()
+{
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+	{
+		Character.CheckDiedStateEnd()
+		Character.UpdateMovement()
+		return
+	}
+	base.Character.UpdateDiedState.Sonic()
+}
+
+function void Character.UpdateDiedState.Tails()
+{
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+	{
+		Character.CheckDiedStateEnd()
+		Character.UpdateMovement()
+		return
+	}
+	base.Character.UpdateDiedState.Tails()
+}
+
+function void Character.UpdateDiedState.Knuckles()
+{
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+	{
+		Character.CheckDiedStateEnd()
+		Character.UpdateMovement()
+		return
+	}
+	base.Character.UpdateDiedState.Knuckles()
+}
+
+
+//-------------------------------------------------------//
+// RespawnKnuckles3                                      //
+//-------------------------------------------------------//
+
+function void RespawnKnuckles3()
+{
+	u16 px = u16[0xffffb000 + 0x10]
+	u16 py = u16[0xffffb000 + 0x14]
+
+	char.base_state = base_state.NORMAL
+	char.position.x.u16 = px + 0x100
+	char.position.y.u16 = py + (global.inv_gravity ? 0x100 : -0x100)
+	char.velocity.x = 0
+	char.velocity.y = 0
+	char.groundspeed = 0
+	char.state = char.state.KNUX_FLYCLIMB
+	char.flags = char.flag.IN_AIR
+	char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+	char.double_jump_state = 1
+	char.render_flags |= render_flag.VISIBLE
+	char.drown_countdown = 30
+	char.hlock_countdown = 0
+	char.invuln.countdown = 0
+	char.invinc.countdown = 0
+	char.speedup.countdown = 0
+	char.protection_flag = 0
+	char.spindash = 0
+	char.spindash_charge = 0
+	char.jumping = 0
+
+	knuckles3.control_counter = 0
+	knuckles3.respawn_counter = 0
+	knuckles3.ai_routine = 0x04
+	knuckles3.ai_jumping = 0
+	knuckles3.flight_target.x = px
+	knuckles3.flight_target.y = py
+}
+
+
+
+//-------------------------------------------------------//
+// Character sprite rendering override                   //
+//-------------------------------------------------------//
+// Character-aware: after swap, any character can be at P3.
+// Uses char.character to select the correct sprite set.
+
+// Skip the standard WriteToSpriteTable for P3 — the character sprite
+// update path (UpdateKnucklesSpritePatterns) writes mapping data through
+// this function, but P3's character mappings aren't formatted for the
+// generic sprite table writer (assertion fires on sprite count).
+// P3 renders via DrawObject → priority list → Standalone.onWriteToSpriteTable.
+function void WriteToSpriteTable()
+{
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+		return
+	base.WriteToSpriteTable()
+}
+
+function void writeToSpriteTable(u16 renderQueue)
+{
+	if (A0 == P3_ADDR && useSonicTailsAndKnuckles)
+		return
+	base.writeToSpriteTable(renderQueue)
+}
+
+
+function bool Standalone.onWriteToSpriteTable(s16 px, s16 py, u16 renderQueue)
+{
+	if (A0 == P3_ADDR && objA0.update_address == 0x350100)
+	{
+		if (char.animation.sprite < 0xfb)
+		{
+			u8 character = u8[A0 + 0x38]
+			return Standalone.drawCharacterSprite(character, 3, px, py, false)
+		}
+		return true
+	}
+
+	// LBZ1 door: render wall and background above Plane A
+	if (objA0.update_address == 0x350500 || objA0.update_address == 0x350502)
+	{
+		return base.Standalone.onWriteToSpriteTable(px, py, 0xf000)
+	}
+
+	// Data Select: replace Sonic+Tails portrait with Sonic+Tails+Knuckles
+	// Draw our trio, then trick base into skipping its Sonic+Tails draw
+	// while still rendering compound sprites (zone preview, arrows).
+	bool isDataSelect = (objA0.update_address == 0x00d30c || objA0.update_address == 0x00d42c)
+	if (isDataSelect)
+	{
+		u32 charAddr = (objA0.update_address == 0x00d30c) ? 0xffffef4c : (A0 + 0x34)
+		u16 characters = (objA0.update_address == 0x00d30c) ? dataselect.nosave_characters : u16[A0 + 0x34]
+		if (characters == CHARS_SONIC_AND_TAILS)
+		{
+			Renderer.drawCustomSprite(getCharacterSelectSpriteKey(CHARACTER_SONIC), px - 14, py - 20, 0x40, SPRITE_FLAG_PRIO | SPRITE_FLAG_FLIP_X, renderQueue)
+			Renderer.drawCustomSprite(getCharacterSelectSpriteKey(CHARACTER_TAILS), px + 2, py - 18, 0x60, SPRITE_FLAG_PRIO | SPRITE_FLAG_FLIP_X, renderQueue)
+			Renderer.drawCustomSprite(getCharacterSelectSpriteKey(CHARACTER_KNUCKLES), px + 22, py - 20, 0x80, SPRITE_FLAG_PRIO, renderQueue + 1)
+
+			objA0.animation.sprite = 0
+			u16 saved = u16[charAddr]
+			u16[charAddr] = 0xff
+			bool result = base.Standalone.onWriteToSpriteTable(px, py, renderQueue)
+			u16[charAddr] = saved
+			return result
+		}
+	}
+
+	return base.Standalone.onWriteToSpriteTable(px, py, renderQueue)
+}
+
+
+//-------------------------------------------------------//
+// drawCharacterSprite override                          //
+//-------------------------------------------------------//
+// Variant 3 = player 3 at P3_ADDR (slot 93).
+// Uses the actual character at P3 for the sprite lookup.
+
+function bool Standalone.drawCharacterSprite(u8 character, u8 variant, s16 px, s16 py, bool asSmallGhost)
+{
+	if (variant == 3)
+	{
+		u32 savedA0 = A0
+		A0 = P3_ADDR
+
+		u8 p3char = u8[A0 + 0x38]
+		// Pass variant 1 (not 0) so isPlayer1 is false in the base.
+		// Otherwise the after-image code reads P1's position backup
+		// and draws P3's sprite at P1's positions.
+		bool result = base.Standalone.drawCharacterSprite(p3char, 1, px, py, asSmallGhost)
+
+		A0 = savedA0
+		return result
+	}
+
+	return base.Standalone.drawCharacterSprite(character, variant, px, py, asSmallGhost)
+}
+
+
+
+//-------------------------------------------------------//
+// P2 Character-Specific Respawn Animations              //
+//-------------------------------------------------------//
+// When a non-Tails character is at P2 after swap,
+// use character-appropriate respawn instead of Tails fly-in.
+// - Sonic: falls in from above (rolling)
+// - Knuckles: glides in from above-right
+
+
+// Override Tails AI respawn setup (routine 0x02 → 0x04 transition)
+//# address-hook(0x013b26)
+function void fn013b26()
+{
+	if (!useSonicTailsAndKnuckles || char.character == CHARACTER_TAILS)
+	{
+		base.fn013b26()
+		return
+	}
+
+	// Non-Tails at P2: custom respawn setup
+#if STANDALONE
+	if (tails.respawn_counter > 0)
+	{
+		--tails.respawn_counter
+		return
+	}
+#endif
+
+	if ((control.tails.state & (CONTROL_START | CONTROL_ABC)) == 0)
+	{
+		if ((level.framecounter & 0x3f) != 0)
+			return
+		if (u8[A1 + 0x2e] & control_flag.DISABLE_INTERACTION)
+			return
+		if (u8[A1 + 0x2a] & 0x80)
+			return
+	}
+
+	tails.ai_routine = 0x04
+
+	u16 px = objA1.position.x.u16
+	u16 py = objA1.position.y.u16
+
+	if (char.character == CHARACTER_KNUCKLES)
+	{
+		// Knuckles: spawn above-right, will glide in
+		char.position.x.u16 = px + 0x80
+		char.position.y.u16 = py + (global.inv_gravity ? 0xc0 : -0xc0)
+		char.state = char.state.KNUX_FLYCLIMB
+		char.double_jump_state = 1
+	}
+	else
+	{
+		// Sonic: spawn above, will fall in
+		char.position.x.u16 = px
+		char.position.y.u16 = py + (global.inv_gravity ? 0xc0 : -0xc0)
+		char.state = char.state.ROLLING
+	}
+
+	tails.flight_target.x = px
+	tails.flight_target.y = py
+
+	char.sprite_attributes |= sprite_attribute.PRIORITY
+	char.sprite_priority = 0x100
+	char.velocity.x = 0
+	char.velocity.y = 0
+	char.groundspeed = 0
+	char.double_jump_state = (char.character == CHARACTER_KNUCKLES) ? 1 : 0
+	char.flags = char.flag.IN_AIR
+	char.drown_countdown = 30
+	char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+	char.hlock_countdown = 0
+	char.invuln.countdown = 0
+	char.invinc.countdown = 0
+	char.speedup.countdown = 0
+	char.protection_flag = 0
+	char.spindash = 0
+	char.spindash_charge = 0
+	char.jumping = 0
+
+	// Preserve super/hyper state — A4 here is Tails' cap, but the
+	// character at P2 might be Sonic after swap, so resetting still
+	// breaks their super speed if active.
+	if (!super.active && !super.active.tails)
+		setSpeedCapProperties(A4, false)
+}
+
+
+// Override Tails AI fly-in (routine 0x04)
+//# address-hook(0x013bf8)
+function void fn013bf8()
+{
+	if (!useSonicTailsAndKnuckles || char.character == CHARACTER_TAILS)
+	{
+		base.fn013bf8()
+		return
+	}
+
+	// Non-Tails at P2: character-specific fly-in
+
+	// Visibility / re-respawn check
+	if (objA0.render_flags & render_flag.VISIBLE)
+	{
+		tails.respawn_counter = 0
+	}
+	else
+	{
+		++tails.respawn_counter
+		if (tails.respawn_counter >= 300)
+		{
+			tails.respawn_counter = 0
+			tails.ai_routine = 0x02
+			char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+			char.flags = char.flag.IN_AIR
+			char.position.x.u16 = 0
+			char.position.y.u16 = 0
+			return
+		}
+	}
+
+	// Update target from P1 position backup
+	D3.u8 = posbackup.offset.player1 - 0x44
+	tails.flight_target.x = u16[0xffffe500 + D3.u8]
+	tails.flight_target.y = u16[0xffffe500 + D3.u8 + 2]
+
+	// Move toward target
+	s16 dx = s16(char.position.x.u16 - tails.flight_target.x)
+	if (dx != 0)
+	{
+		s16 moveX = min(abs(dx) >> 4, 12)
+		moveX += abs(s16(objA1.velocity.x)) + 1
+		if (dx > 0)
+		{
+			char.flags |= char.flag.FACING_LEFT
+			char.position.x.u16 -= min(moveX, abs(dx))
+		}
+		else
+		{
+			char.flags &= ~char.flag.FACING_LEFT
+			char.position.x.u16 += min(moveX, abs(s16(dx)))
+		}
+	}
+
+	s16 dy = s16(char.position.y.u16 - tails.flight_target.y)
+	if (dy != 0)
+	{
+		if (char.character == CHARACTER_KNUCKLES)
+		{
+			// Knuckles descends gradually (glide style)
+			char.position.y.u16 += (dy > 0) ? -2 : 2
+		}
+		else
+		{
+			// Sonic falls faster
+			char.position.y.u16 += (dy > 0) ? -3 : 3
+		}
+	}
+
+	// Check if close enough to gain control
+	u8 flagsBackup = u8[0xffffe400 + D3.u8 + 2] & 0x80
+	if (flagsBackup == 0 && u8[0xffffb000 + 0x05] < base_state.DIED)
+	{
+		bool gainControlNow = (abs(dx) <= 8 && abs(dy) <= 8)
+		gainControlNow = gainControlNow || (abs(s16(objA1.position.x.u16 - char.position.x.u16)) <= 8 && abs(s16(objA1.position.y.u16 - char.position.y.u16)) <= 8)
+
+		if (gainControlNow)
+		{
+			tails.ai_routine = 0x06
+			char.control_flags = 0
+			char.state = char.state.ROLLING
+			char.double_jump_state = 0
+			char.velocity.x = 0
+			char.velocity.y = 0
+			char.groundspeed = 0
+			char.flags &= char.flag.UNDERWATER
+			char.flags |= char.flag.IN_AIR
+			char.hlock_countdown = 0
+			char.sprite_attributes = (char.sprite_attributes & ~sprite_attribute.PRIORITY) | (objA1.sprite_attributes & sprite_attribute.PRIORITY)
+			char.layer_flags1 = u8[A1 + 0x46]
+			char.layer_flags2 = u8[A1 + 0x47]
+			return
+		}
+	}
+	char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+}

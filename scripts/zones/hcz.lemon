@@ -1,0 +1,298 @@
+
+//-------------------------------------------------------//
+// HCZ: Hydrocity Zone                                   //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// HCZ2: Jump on button to collapse bridge
+//=============================================================
+
+//# address-hook(0x062112)
+function void fn062112()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn062112()
+		return
+	}
+
+	// First frame: spawn the button child (not level-placed in HCZ2)
+	if (objA0.base_state == 0x00)
+	{
+		spawnChildObject(0x065bd4, 0x00, 0, 12)
+		if (_equal())
+		{
+			u8[A1 + 0x2c] = 0x02
+		}
+		objA0.base_state = 0x02
+		objA0.render_flags = render_flag.WORLD
+	}
+
+	CheckForUnloadObject()
+}
+
+
+//=============================================================
+// HCZ2: Boss + water — path-based, not character-based
+//=============================================================
+// camera Y > 0x0400 = Sonic path (lower/deeper)
+// camera Y <= 0x0400 = Knuckles path (upper)
+
+// Water level — path-based
+//# address-hook(0x006e9c)
+function void UpdateWaterSurfaceLevel.HCZ2()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.UpdateWaterSurfaceLevel.HCZ2()
+		return
+	}
+
+	if (u8[0xfffffaa2] != 0)
+		return
+
+	if (camera.position.y.u16 > 0x0400)
+	{
+		A1 = 0x006eba
+		fn006f2c()
+	}
+	else
+	{
+		A1 = 0x006ec2
+		fn006f2c()
+	}
+}
+
+// Boss init — pick area data by camera Y
+//# address-hook(0x06aeb6)
+function void fn06aeb6()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn06aeb6()
+		return
+	}
+
+#if STANDALONE
+	if (Game.isTimeAttack())
+	{
+		UnloadObject()
+		return
+	}
+#endif
+
+	A1 = (camera.position.y.u16 > 0x0400) ? 0x06ae96 : 0x06aea6
+	if (InitBoss(0x06aecc))
+		return
+
+	objA0.value26 = MUSIC_MAINBOSS
+	StartBossFight()
+
+#if STANDALONE
+	level.bossarea.right = max(level.bossarea.right, level.bossarea.left + getScreenExtend() * 2)
+#endif
+
+	objA0.update_address = 0x06aefe
+	objA0.countdown_callback = 0x06af04
+	requestLoadingPatterns(0x6c)
+	u16[0xfffffc1e] = 0
+	loadPaletteLine1(0x06bf0a)
+}
+
+// Boss intro — always use harder AI
+//# address-hook(0x06afc8)
+function void fn06afc8()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn06afc8()
+		return
+	}
+
+	objA0.flags38 |= 0x08
+	objA0.base_state = 0x0a
+	objA0.countdown_value = 0x01ff
+	objA0.countdown_callback = 0x06b03a
+}
+
+// Boss defeat — capsule position by camera Y
+//# address-hook(0x06b0e8)
+function void fn06b0e8()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn06b0e8()
+		return
+	}
+
+	objA0.update_address = 0x06b154
+	objA0.render_flags &= ~0x80
+	level.wait_for_results = 0xff
+	level.boss_encounter = 0
+	screenmover_target.right = level.bossarea.left + 0x0180 + getScreenExtend() * 2
+
+#if STANDALONE
+	screenmover_target.right -= getScreenExtend()
+	u8[0xffff81a8] = 0
+	u8[0xffff8238] = 0
+	u8[0xffff82c8] = 0
+	u8[0xffff8358] = 0
+	u8[0xffff83e8] = 0
+	u8[0xffff8478] = 0
+	u8[0xffff8508] = 0x1f
+#endif
+
+	spawnSimpleChildObjects(0x084b00)
+
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x086540
+		if (camera.position.y.u16 > 0x0400)
+		{
+			objA1.position.x.u16 = 0x4250
+			objA1.position.y.u16 = 0x07e0
+		}
+		else
+		{
+			objA1.position.x.u16 = 0x4760
+			objA1.position.y.u16 = 0x0360
+		}
+	}
+}
+
+
+
+
+//-------------------------------------------------------//
+// HCZ 1 Mini-Boss: Water Agitator Grab                  //
+//-------------------------------------------------------//
+// fn06a9b8 checks P1 (0xffffb000) and P2 (0xffffb04a)
+// positions to grab players into the whirlpool vortex.
+// Type: GRAB - pulls players downward into the agitator.
+
+//# address-hook(0x06a9b8)
+function void fn06a9b8()
+{
+	base.fn06a9b8()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// P3 grab check — same logic as P1/P2 in base
+	u32 A2_backup = A2
+	D0.u16 = objA0.position.y.u16 - 0x20
+
+	A2 = P3_ADDR
+	if (D0.u16 <= u16[A2 + 0x14] && u8[A2 + 0x05] < base_state.DIED)
+	{
+		// Store P3 reference in a free slot (value42 is P1, 0x44 is P2)
+		// We reuse the same pull function that base uses
+		fn06aa30()
+
+		if (u8[A2 + 0x2e] == 0)
+		{
+			fn06aa00()
+		}
+	}
+
+	A2 = A2_backup
+}
+
+
+//-------------------------------------------------------//
+// HCZ 2 Boss: Propeller Bubble Knockback                //
+//-------------------------------------------------------//
+// fn06b9ac pushes P1 and P2 away from the water surface
+// when they are submerged near the propeller.
+// Type: KNOCKBACK - pushes players horizontally.
+
+//# address-hook(0x06b9ac)
+function void fn06b9ac()
+{
+	base.fn06b9ac()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Apply same push to P3
+	D0.u16 = objA0.position.x.u16
+	D1.u16 = water.height.current + 8
+	D2 = 0x020000
+
+	A1 = P3_ADDR
+	fn06b9c8()
+}
+
+
+//-------------------------------------------------------//
+// HCZ 2 Boss: Underwater Suction/Grab                   //
+//-------------------------------------------------------//
+// fn06b9e2 checks P1 (offset 0x42) and P2 (offset 0x43)
+// for the suction grab near the boss pole underwater.
+// Type: GRAB - sucks players into the pole mechanism.
+
+//# address-hook(0x06b9e2)
+function void fn06b9e2()
+{
+	base.fn06b9e2()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// P3 suction check — uses a free byte at offset 0x3f
+	// (base uses 0x42 for P1 and 0x43 for P2)
+	D4 = 0x3f
+	A2 = P3_ADDR
+	fn06ba06()
+}
+
+
+//-------------------------------------------------------//
+// HCZ 2 Boss: Release grabbed players on defeat         //
+//-------------------------------------------------------//
+// fn06bb1e releases P1 (0x42) and P2 (0x43) when the
+// boss pole mechanism stops. Must also release P3.
+// Type: GRAB release
+
+//# address-hook(0x06bb1e)
+function void fn06bb1e()
+{
+	base.fn06bb1e()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Release P3 if grabbed (using offset 0x3f)
+	if (u8[A0 + 0x3f] != 0)
+	{
+		u8[A0 + 0x3f] = 0
+		A2 = P3_ADDR
+		fn06bb02()
+	}
+}
+
+
+//-------------------------------------------------------//
+// HCZ 2 Boss: Water Bomb Fountain Knockback             //
+//-------------------------------------------------------//
+// fn06bb40 checks P1 and P2 against the bomb's water
+// fountain hitbox, launching them upward if inside.
+// Type: KNOCKBACK - launches players upward.
+
+//# address-hook(0x06bb40)
+function void fn06bb40()
+{
+	base.fn06bb40()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// Check P3 against the water fountain
+	if (objA0.animation.frame < 0x30)
+	{
+		A1 = 0x06bb92
+		A2 = P3_ADDR
+		fn06bb5c()
+	}
+}

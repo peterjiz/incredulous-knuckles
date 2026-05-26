@@ -1,0 +1,542 @@
+
+//-------------------------------------------------------//
+// Knuckles 3rd Character AI                             //
+//-------------------------------------------------------//
+//
+// State machine (knuckles3.ai_routine values):
+//   0x00 = Init (single frame)
+//   0x02 = Respawn check (offscreen counter, 300 frames)
+//   0x04 = Gliding in (Knuckles glides from above)
+//   0x06 = Normal state -- ground-following AI
+//   0x08 = Auto-spindash on slopes
+//   0x0a = Inactive (cutscenes)
+
+
+function void Character.Knuckles3AI.Update()
+{
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	if (hpz_npc_cutscene_active)
+	{
+		control.knuckles3 = 0
+		return
+	}
+
+	if (ERZFlight.CompanionFollow(P3_ADDR, -0x18, -0x10))
+	{
+		control.knuckles3 = 0
+		return
+	}
+
+	A1 = 0xffffb000		// Player 1
+
+	// Clear AI controls before writing new ones this frame
+	control.knuckles3 = 0
+
+	// ALWAYS check distance to player 1, regardless of AI state.
+	// If too far away, teleport back immediately.
+	// This must run before the routine dispatch because some routines
+	// (like 0x0a inactive) never check respawn at all.
+	if (knuckles3.ai_routine != 0x00)		// Skip on first-frame init
+	{
+		s16 dx = s16(char.position.x.u16 - u16[0xffffb000 + 0x10])
+		s16 dy = s16(char.position.y.u16 - u16[0xffffb000 + 0x14])
+
+		if (abs(dx) >= AI_RESPAWN_MAX_DISTANCE_X || abs(dy) >= AI_RESPAWN_MAX_DISTANCE_Y)
+		{
+			// Teleport to player 1 and force normal AI state
+			char.position.x.u16 = u16[0xffffb000 + 0x10] + 0x20
+			char.position.y.u16 = u16[0xffffb000 + 0x14]
+			char.velocity.x = 0
+			char.velocity.y = 0
+			char.groundspeed = 0
+			char.base_state = base_state.NORMAL
+			char.state = char.state.RUNNING
+			char.flags = char.flag.IN_AIR
+			char.control_flags = 0
+			char.double_jump_state = 0
+			char.render_flags |= render_flag.VISIBLE
+			knuckles3.ai_routine = 0x06
+			knuckles3.respawn_counter = 0
+			knuckles3.ai_jumping = 0
+			return
+		}
+	}
+
+	// Dispatch based on AI routine
+	u16 routine = knuckles3.ai_routine
+	if (routine == 0x00)
+	{
+		Knuckles3AI.Init()
+	}
+	else if (routine == 0x02)
+	{
+		Knuckles3AI.Respawn()
+	}
+	else if (routine == 0x04)
+	{
+		Knuckles3AI.GlideIn()
+	}
+	else if (routine == 0x06)
+	{
+		Knuckles3AI.Normal()
+	}
+	else if (routine == 0x08)
+	{
+		Knuckles3AI.AutoSpindash()
+	}
+	else
+	{
+		// Any other state (0x0a inactive, etc.) -- force to normal after init
+		knuckles3.ai_routine = 0x06
+		char.control_flags = 0
+	}
+}
+
+
+//-------------------------------------------------------//
+// Routine 0x00: Initialization                          //
+//-------------------------------------------------------//
+
+function void Knuckles3AI.Init()
+{
+	if (checkpoint.number == 0)
+	{
+		if (global.zone_act == 0x0000)		// AIZ 1
+		{
+			if (isMainCharacter(CHARACTER_SONIC))
+			{
+				// Inactive during Sonic's AIZ intro
+				knuckles3.ai_routine = 0x0a
+				char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_ANIMATION | control_flag.DISABLE_UPDATE)
+				return
+			}
+		}
+		else if (global.zone_act == 0x0500 || global.zone_act == 0x0a00)	// ICZ 1, SSZ
+		{
+			// Respawn after a short delay
+			RespawnKnuckles3()
+			knuckles3.ai_routine = 0x02
+			char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+			char.flags = char.flag.IN_AIR
+			char.position.x.u16 = 0
+			char.position.y.u16 = 0
+			return
+		}
+	}
+
+	// Default: enter normal state
+	char.state = char.state.RUNNING
+	char.velocity.x = 0
+	char.velocity.y = 0
+	char.groundspeed = 0
+	char.flags = 0
+	char.control_flags = 0
+	knuckles3.respawn_counter = 0
+	knuckles3.ai_routine = 0x06
+}
+
+
+//-------------------------------------------------------//
+// Routine 0x02: Respawn check                           //
+//-------------------------------------------------------//
+
+function void Knuckles3AI.Respawn()
+{
+	// Wait for a good moment to respawn
+	if ((control.knuckles3.state & (CONTROL_START | CONTROL_ABC)) == 0)
+	{
+		// Check only every 64 frames
+		if ((level.framecounter & 0x3f) != 0)
+			return
+		if (u8[A1 + 0x2e] & control_flag.DISABLE_INTERACTION)
+			return
+		if (u8[A1 + 0x2a] & 0x80)
+			return
+	}
+
+	knuckles3.ai_routine = 0x04
+
+	// Spawn above and to the right of player 1
+	u16 px = u16[A1 + 0x10]
+	u16 py = u16[A1 + 0x14]
+	char.position.x.u16 = px + 0x80
+	char.position.y.u16 = py + (global.inv_gravity ? 0xc0 : -0xc0)
+	knuckles3.flight_target.x = px
+	knuckles3.flight_target.y = py
+
+	char.sprite_attributes |= sprite_attribute.PRIORITY
+	char.sprite_priority = 0x100
+	char.velocity.x = 0
+	char.velocity.y = 0
+	char.groundspeed = 0
+	char.double_jump_state = 0
+	char.flags = char.flag.IN_AIR
+	char.drown_countdown = 30
+	char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+	char.hlock_countdown = 0
+	char.invuln.countdown = 0
+	char.invinc.countdown = 0
+	char.speedup.countdown = 0
+	char.protection_flag = 0
+	char.look_up_down_timer = 0
+	char.spindash = 0
+	char.spindash_charge = 0
+	char.jumping = 0
+
+	// Fix speed caps if needed — but preserve super/hyper state.
+	// A4 here is 0xfffff760 (P1's cap) because BaseUpdate.Knuckles
+	// sets it that way.  Resetting unconditionally clobbers P1's
+	// hyper speed cap after swap/debug-mode exit.
+	if (!super.active && !super.active.tails)
+		setSpeedCapProperties(A4, false)
+}
+
+
+//-------------------------------------------------------//
+// Routine 0x04: Glide in                                //
+//-------------------------------------------------------//
+// Knuckles glides horizontally toward player 1, descending gradually.
+
+function void Knuckles3AI.GlideIn()
+{
+	// Update target from player 1 position backup (16 frames back)
+	D3.u8 = posbackup.offset.player1 - 0x44
+	knuckles3.flight_target.x = u16[0xffffe500 + D3.u8]
+	knuckles3.flight_target.y = u16[0xffffe500 + D3.u8 + 2]
+
+	// Check visibility
+	if (objA0.render_flags & render_flag.VISIBLE)
+	{
+		knuckles3.respawn_counter = 0
+	}
+	else
+	{
+		++knuckles3.respawn_counter
+		if (knuckles3.respawn_counter >= AI_RESPAWN_OFFSCREEN_TIMEOUT)
+		{
+			// Offscreen too long, re-respawn
+			knuckles3.respawn_counter = 0
+			knuckles3.ai_routine = 0x02
+			char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+			char.flags = char.flag.IN_AIR
+			char.position.x.u16 = 0
+			char.position.y.u16 = 0
+			return
+		}
+	}
+
+	// Move toward target position
+	s16 dx = char.position.x.u16 - knuckles3.flight_target.x
+	if (dx != 0)
+	{
+		s16 moveX = min(abs(dx) >> 4, 12)
+		moveX += abs(u16[A1 + 0x18]) + 1		// Add player 1 velocity.x magnitude
+		if (dx > 0)
+		{
+			char.flags |= char.flag.FACING_LEFT
+			if (moveX >= dx)
+			{
+				moveX = dx
+				dx = 0
+			}
+			char.position.x.u16 -= moveX
+		}
+		else
+		{
+			char.flags &= ~char.flag.FACING_LEFT
+			dx = -dx
+			if (moveX >= dx)
+			{
+				moveX = dx
+				dx = 0
+			}
+			char.position.x.u16 += moveX
+		}
+	}
+
+	s16 dy = char.position.y.u16 - knuckles3.flight_target.y
+	if (dy != 0)
+	{
+		// Consider vertical level wrap
+		if (level.vertical_wrap == 0xff00)
+		{
+			dy &= level.height.bitmask
+			if (dy > s16(level.height.bitmask / 2))
+				dy -= s16(level.height.bitmask + 1)
+		}
+		char.position.y.u16 += (dy > 0) ? -GLIDEIN_DESCENT_RATE : GLIDEIN_DESCENT_RATE
+	}
+
+	// Check if close enough to gain control
+	u8 flagsBackup = u8[0xffffe400 + D3.u8 + 2] & 0x80
+	if (flagsBackup == 0 && u8[0xffffb000 + 0x05] < base_state.DIED)
+	{
+		bool gainControlNow = (abs(dx) <= 8 && abs(dy) <= 8)
+		gainControlNow = gainControlNow || (abs(s16(u16[A1 + 0x10] - char.position.x.u16)) <= 8 && abs(s16(u16[A1 + 0x14] - char.position.y.u16)) <= 8)
+
+		// Manual button press gives instant control
+		gainControlNow = gainControlNow || (control.knuckles3.pressed & CONTROL_ABC)
+
+		if (gainControlNow)
+		{
+			knuckles3.ai_routine = 0x06
+			char.control_flags = 0
+			char.state = char.state.ROLLING
+			char.double_jump_state = 0		// Clear glide state
+			char.velocity.x = 0
+			char.velocity.y = 0
+			char.groundspeed = 0
+			char.flags &= char.flag.UNDERWATER
+			char.flags |= char.flag.IN_AIR
+			char.hlock_countdown = 0
+			char.sprite_attributes = (char.sprite_attributes & ~sprite_attribute.PRIORITY) | (u16[A1 + 0x0a] & sprite_attribute.PRIORITY)
+			char.layer_flags1 = u8[A1 + 0x46]
+			char.layer_flags2 = u8[A1 + 0x47]
+			return
+		}
+	}
+	char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+}
+
+
+//-------------------------------------------------------//
+// Routine 0x06: Normal state                            //
+//-------------------------------------------------------//
+// Ground-following AI -- walk toward player 1, jump obstacles,
+// mimic spindash, face same direction.
+
+function void Knuckles3AI.Normal()
+{
+	// If player 1 died, go to glide-in mode
+	if (u8[0xffffb000 + 0x05] >= base_state.DIED)
+	{
+		knuckles3.ai_routine = 0x04
+		char.spindash = 0
+		char.spindash_charge = 0
+		char.control_flags = (control_flag.DISABLE_INTERACTION | control_flag.DISABLE_UPDATE)
+		char.flags = char.flag.IN_AIR
+		return
+	}
+
+	// Glide safety timeout: if Knuckles has been gliding/climbing for too
+	// long (~1.5 sec), cancel it. The AI can initiate glides via jump input
+	// but can't intentionally exit them. Without this, Knuckles floats forever.
+	if (char.character == CHARACTER_KNUCKLES && char.double_jump_state != 0 && (char.flags & char.flag.IN_AIR))
+	{
+		++knuckles3.glide_timer
+		if (knuckles3.glide_timer >= GLIDE_SAFETY_TIMEOUT)
+		{
+			char.double_jump_state = 0
+			char.state = char.state.ROLLING
+			knuckles3.glide_timer = 0
+		}
+		return		// Don't generate walk input while gliding
+	}
+	else
+	{
+		knuckles3.glide_timer = 0
+	}
+
+	// Check visibility / respawn
+	Knuckles3AI.CheckRespawn()
+
+	// Check for auto-spindash on slopes
+	if (knuckles3.control_counter == 0 && (u8[A0 + 0x2e] & 0x80) == 0 && (u8[A1 + 0x37] & 0x80) == 0)
+	{
+		if (char.hlock_countdown != 0 && char.groundspeed == 0)
+		{
+			knuckles3.ai_routine = 0x08
+		}
+
+		// Get target position from player 1's position backup (offset by +0x30 right so Knuckles doesn't overlap with Tails)
+		D0.u8 = posbackup.offset.player1 - 0x44
+		u16 targetPosX = u16[0xffffe500 + D0.u8]
+		u16 targetPosY = u16[0xffffe500 + D0.u8 + 2]
+		u16 controlBackup = u16[0xffffe400 + D0.u8]
+		u8 flagsBackup = u8[0xffffe400 + D0.u8 + 2]
+
+		// Offset target to the right so Knuckles doesn't overlap Tails (who targets left)
+		if ((u16[A1 + 0x2a] & char.flag.ON_OBJECT) == 0 && u16[A1 + 0x1c] < 0x400)
+		{
+			targetPosX += AI_FOLLOW_OFFSET_X
+		}
+		s16 relativeTargetPosX = s16(targetPosX - char.position.x.u16)
+
+		// Start from zero -- build controls independently, don't copy P1's input
+		control.knuckles3 = 0
+
+		if ((char.flags & char.flag.PUSHING) && ((flagsBackup & char.flag.PUSHING) == 0))
+		{
+			// Jump over obstacle
+			if (abs(relativeTargetPosX) >= AI_JUMP_THRESHOLD_X)
+			{
+				if ((level.framecounter.low & 0x3f) == 0 && char.state != char.state.COWERING)
+				{
+					control.knuckles3 |= 0x7070		// CONTROL_ABC, CONTROL_ABC
+					knuckles3.ai_jumping = 1
+				}
+			}
+		}
+		else
+		{
+			if (relativeTargetPosX == 0)
+			{
+				// Match player 1 facing direction
+				char.flags = (char.flags & ~char.flag.FACING_LEFT) | (flagsBackup & char.flag.FACING_LEFT)
+			}
+			else
+			{
+				if (relativeTargetPosX < 0)
+				{
+					if (relativeTargetPosX <= -AI_JUMP_THRESHOLD_X)
+					{
+						control.knuckles3 = (control.knuckles3 & ~0x0c0c) | 0x0404		// Move left
+					}
+					if (char.groundspeed != 0 && (char.flags & char.flag.FACING_LEFT) != 0 && (char.control_flags & 0x01) == 0)
+					{
+						--char.position.x.u16
+					}
+				}
+				else
+				{
+					if (relativeTargetPosX >= AI_JUMP_THRESHOLD_X)
+					{
+						control.knuckles3 = (control.knuckles3 & ~0x0c0c) | 0x0808		// Move right
+					}
+					if (char.groundspeed != 0 && (char.flags & char.flag.FACING_LEFT) == 0 && (char.control_flags & 0x01) == 0)
+					{
+						++char.position.x.u16
+					}
+				}
+			}
+
+			// Keep jump button held after AI-initiated jump
+			if (knuckles3.ai_jumping != 0)
+			{
+				control.knuckles3 |= 0x7000		// CONTROL_ABC, 0
+				if (char.flags & char.flag.IN_AIR)
+					return
+				knuckles3.ai_jumping = 0
+			}
+
+			// Jump when target is significantly above
+			if ((level.framecounter & 0xff) == 0 || abs(relativeTargetPosX) < 0x40)
+			{
+				s16 relativeTargetPosY = s16(targetPosY - char.position.y.u16)
+				if (relativeTargetPosY <= -s16(AI_JUMP_THRESHOLD_Y))
+				{
+					if (((level.framecounter.low & 0x3f) == 0) && (char.state != char.state.COWERING))
+					{
+						control.knuckles3 |= 0x7070		// CONTROL_ABC, CONTROL_ABC
+						knuckles3.ai_jumping = 1
+					}
+				}
+			}
+
+			// Mirror spindash when player 1 is charging one
+			if (char.velocity.x == 0 && u16[A1 + 0x18] == 0)
+			{
+				// Face same direction as player 1
+				if ((objA0.flags2a & char.flag.FACING_LEFT) != (u8[A1 + 0x2a] & char.flag.FACING_LEFT))
+				{
+					objA0.flags2a = (objA0.flags2a & ~char.flag.FACING_LEFT) | (u8[A1 + 0x2a] & char.flag.FACING_LEFT)
+				}
+
+				// Start spindash if player 1 is doing one
+				if (char.spindash == 0 && u8[A1 + 0x3d] != 0 && char.state == char.state.COWERING)
+				{
+					control.knuckles3 |= 0x0020		// 0, CONTROL_C
+				}
+			}
+		}
+	}
+	else if (knuckles3.control_counter != 0)
+	{
+		--knuckles3.control_counter
+	}
+}
+
+
+//-------------------------------------------------------//
+// Routine 0x08: Auto-spindash on slopes                 //
+//-------------------------------------------------------//
+
+function void Knuckles3AI.AutoSpindash()
+{
+	Knuckles3AI.CheckRespawn()
+
+	if (knuckles3.control_counter != 0)
+		return
+
+	if (u8[A0 + 0x3d] == 0)
+	{
+		if (objA0.groundspeed != 0)
+			return
+
+		D0.u16 = objA0.position.x.u16 - u16[A1 + 0x10]
+		if (D0.s16 >= 0)
+			objA0.flags2a |= char.flag.FACING_LEFT
+		else
+			objA0.flags2a &= ~char.flag.FACING_LEFT
+
+		control.knuckles3 = 0x0202		// CONTROL_DOWN, CONTROL_DOWN
+
+		D0.u8 = level.framecounter.low & 0x7f
+		if (D0.u8 == 0)
+		{
+			control.knuckles3 = 0
+			knuckles3.ai_routine = 0x06
+		}
+		else if (char.state == char.state.COWERING)
+		{
+			control.knuckles3 = 0x7272		// (CONTROL_ABC | CONTROL_DOWN), (CONTROL_ABC | CONTROL_DOWN)
+		}
+	}
+	else
+	{
+		control.knuckles3 = 0x0202		// CONTROL_DOWN, CONTROL_DOWN
+
+		D0.u8 = level.framecounter.low & 0x7f
+		if (D0.u8 == 0)
+		{
+			control.knuckles3 = 0
+			knuckles3.ai_routine = 0x06
+		}
+		else if ((D0.u8 & 0x1f) == 0)
+		{
+			control.knuckles3 = 0x7272		// (CONTROL_ABC | CONTROL_DOWN), (CONTROL_ABC | CONTROL_DOWN)
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Respawn check helper                                  //
+//-------------------------------------------------------//
+
+function void Knuckles3AI.CheckRespawn()
+{
+	s16 dx = s16(char.position.x.u16 - u16[0xffffb000 + 0x10])
+	s16 dy = s16(char.position.y.u16 - u16[0xffffb000 + 0x14])
+
+	if (abs(dx) >= AI_RESPAWN_MAX_DISTANCE_X || abs(dy) >= AI_RESPAWN_MAX_DISTANCE_Y)
+	{
+		// Teleport directly to player 1 and resume normal AI
+		char.position.x.u16 = u16[0xffffb000 + 0x10] + 0x20
+		char.position.y.u16 = u16[0xffffb000 + 0x14]
+		char.velocity.x = 0
+		char.velocity.y = 0
+		char.groundspeed = 0
+		char.base_state = base_state.NORMAL
+		char.state = char.state.RUNNING
+		char.flags = char.flag.IN_AIR
+		char.control_flags = 0
+		char.double_jump_state = 0
+		char.render_flags |= render_flag.VISIBLE
+		knuckles3.ai_routine = 0x06
+		knuckles3.respawn_counter = 0
+		knuckles3.ai_jumping = 0
+	}
+}

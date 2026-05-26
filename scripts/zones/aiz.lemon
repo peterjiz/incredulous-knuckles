@@ -1,0 +1,770 @@
+
+//-------------------------------------------------------//
+// AIZ: Angel Island Zone                                //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// AIZ2: Jump on button to collapse bridge
+//=============================================================
+
+//# address-hook(0x061f98)
+function void fn061f98()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061f98()
+		return
+	}
+
+	// Release Sonic from post-boss lock (boss defeat set control_override)
+	player1.control_override = 0
+	player2.control_override = 0
+	u8[0xffffb000 + 0x2e] = 0
+	u8[0xffffb000 + 0x20] = 0
+
+	UnloadObject()
+}
+
+// AIZ2 post-boss: bridge approach / path split.
+// Base uses isMainCharacter(KNUCKLES) — replace with camera Y
+// so any character on Knuckles' path gets the jump-off transition.
+//# address-hook(0x069526)
+function void fn069526()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn069526()
+		return
+	}
+
+	tails.catch_timeout = 5
+	A1 = 0xffffb000
+	D0.u16 = u16[0xfffffa84] + 0x01f8
+	if (D0.u16 > objA1.position.x.u16)
+	{
+		control.player1 = 0x0808
+		return
+	}
+
+	StopObjectA1()
+
+	if (camera.position.y.u16 < 0x200)
+	{
+		EndLocation = 1
+		objA0.update_address = 0x069588
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x061d4c
+			objA1.subtype2c = 0x04
+		}
+		addPatternLoadingCue(0x083d6c)
+	}
+	else
+	{
+		EndLocation = 2
+		objA0.update_address = 0x0695ce
+		control.player1 = 0x2020
+	}
+}
+
+
+//=============================================================
+// Water Level: AIZ2 — suppress water on Knuckles' lower path
+//=============================================================
+
+//# address-hook(0x006dde)
+function void UpdateWaterSurfaceLevel.AIZ2()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.UpdateWaterSurfaceLevel.AIZ2()
+		return
+	}
+
+	if (camera.position.y.u16 >= 0x0500)
+	{
+		water.height.target = 0x1000
+		return
+	}
+	base.UpdateWaterSurfaceLevel.AIZ2()
+}
+
+
+
+//-------------------------------------------------------//
+// AIZ Act 1 Intro Cutscene Override                      //
+//-------------------------------------------------------//
+//
+// Modified sequence after Knuckles knocks emeralds out:
+// 1. Knuckles lands after jumping out of ground (base)
+// 2. [NEW] Eggman runs in from right, collects emeralds
+// 3. [NEW] Eggman turns around, runs back right
+// 4. [NEW] Knuckles punches Eggman as he passes
+// 5. [NEW] On the frame the punch ends: emeralds release, cutscene
+//         Knuckles is hidden, cleanup triggers — so P3 Knuckles
+//         spawns next frame at Sonic's side (via fn061f10).
+// 6. Cleanup: title card, level start (base pattern)
+//
+// Custom address hooks 0x350200-0x350218.
+
+// Eggman object state tracking
+global u32 eggman_cutscene_addr
+global u16 eggman_cutscene_timer
+global u32 knuckles_cutscene_addr		// Stored before 0xfffffaa4 gets redirected
+global u16 knuckles_cutscene_x			// Knuckles' X position for Eggman's return target
+global bool knuckles_punch_active		// True while punch animation is playing
+global u8 knuckles_punch_frames			// Frames remaining for punch display
+global bool knuckles_cutscene_ending	// True = parked, waiting to finish
+
+
+//-------------------------------------------------------//
+// fn061d92 override: force sprite after state dispatch  //
+//-------------------------------------------------------//
+// The state handler (fn061ee0) sets sprite=0x16 while Knuckles
+// is parked, but something in the engine (or residual anim data)
+// was still advancing the sprite between the state call and the
+// draw. Re-assert the sprite here, right before the draw, as a
+// last-line guarantee.
+
+//# address-hook(0x061d92) end(0x061daa)
+function void fn061d92()
+{
+	call tableLookupAddress(0x061db0, objA0.base_state)
+
+	if (useSonicTailsAndKnuckles && objA0.base_state == 0x0a && !knuckles_punch_active && objA0.velocity.x == 0)
+	{
+		objA0.animation.sprite = 0x16
+		objA0.animation.timer = 0xFF
+		objA0.animation.frame = 0
+		u32[A0 + 0x30] = 0x0666c4
+		u16[A0 + 0x44] = 0
+	}
+
+	Object.loadSpritePatternsForVDP(0x06666a)
+	DrawObject()
+}
+
+
+//-------------------------------------------------------//
+// fn061df4 override: spawn Eggman when Knuckles jumps   //
+//-------------------------------------------------------//
+
+//# address-hook(0x061df4) end(0x061e1e)
+function void fn061df4()
+{
+	// Let base handle all the jump logic untouched
+	base.fn061df4()
+
+	// If base just triggered the jump (base_state changed to 0x04),
+	// spawn Eggman now using Knuckles' pre-jump ground Y
+	if (useSonicTailsAndKnuckles && objA0.base_state == 0x04 && eggman_cutscene_addr == 0)
+	{
+		// Store Knuckles' info BEFORE redirecting 0xfffffaa4
+		knuckles_cutscene_addr = A0
+		knuckles_cutscene_x = objA0.position.x.u16
+
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x350200
+			objA1.position.x.u16 = objA0.position.x.u16 + 0x200
+			objA1.position.y.u16 = objA0.position.y.u16 - 39
+			eggman_cutscene_addr = A1
+			u16[0xfffffaa4] = A1 & 0xffff
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// fn061e24 override: shorter landing wait               //
+//-------------------------------------------------------//
+
+//# address-hook(0x061e24) end(0x061e62)
+function void fn061e24()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061e24()
+		return
+	}
+
+	Object.animationProgress(0x0666af)
+	UpdateMovementSimple()
+	if (D0.s32 >= 0)
+	{
+		CheckGroundCollision()
+		if (D1.s16 < 0)
+		{
+			objA0.base_state = 0x06
+			objA0.position.y.u16 += D1.u16
+			objA0.animation.sprite = 0x16
+			objA0.countdown_value = 1
+			objA0.countdown_callback = 0x061e6a
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// fn061e6a override: Eggman collects instead of Knuckles
+//-------------------------------------------------------//
+// Base: Knuckles runs left to grab emeralds.
+// Ours: Knuckles stands, Eggman runs left to grab them.
+
+//# address-hook(0x061e6a) end(0x061e8e)
+function void fn061e6a()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061e6a()
+		return
+	}
+
+	objA0.base_state = 0x08
+	objA0.animation.sprite = 0x16		// Knuckles stands watching
+	objA0.velocity.x = 0
+	objA0.velocity.y = 0
+
+	// Eggman already spawned during Knuckles' jump (fn061e24).
+	// Punch is triggered by Eggman's turn callback, not this timer.
+	// Just wait here indefinitely — KnucklesPunch will advance the state.
+	objA0.countdown_value = 9999
+	objA0.countdown_callback = 0x35020a		// AIZIntro.KnucklesPunch (fallback)
+}
+
+
+//-------------------------------------------------------//
+// fn061e96 override: state 0x08 update                  //
+//-------------------------------------------------------//
+// Base: Knuckles runs and animates. Ours: Knuckles waits.
+
+//# address-hook(0x061e96) end(0x061ea2)
+function void fn061e96()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061e96()
+		return
+	}
+	Object.CountdownAndTrigger()
+}
+
+
+//-------------------------------------------------------//
+// fn061ec2 override: skip chuckle                       //
+//-------------------------------------------------------//
+
+//# address-hook(0x061ec2) end(0x061edc)
+function void fn061ec2()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061ec2()
+		return
+	}
+	// Shouldn't reach here in our flow, but safe fallback
+	objA0.base_state = 0x0a
+	objA0.animation.sprite = 0x16
+	objA0.countdown_value = 1
+	objA0.countdown_callback = 0x35020e		// AIZIntro.KnucklesRelease
+}
+
+
+//-------------------------------------------------------//
+// fn061ee0 override: state 0x0a update                  //
+//-------------------------------------------------------//
+
+//# address-hook(0x061ee0) end(0x061ee6)
+function void fn061ee0()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061ee0()
+		return
+	}
+
+	// Parked: force standing sprite and pin animation state so nothing advances
+	if (knuckles_cutscene_ending)
+	{
+		objA0.animation.sprite = 0x16
+		objA0.animation.timer = 0xFF
+		objA0.animation.frame = 0
+		u32[A0 + 0x30] = 0x0666c4
+		u16[A0 + 0x44] = 0
+		objA0.render_flags &= ~render_flag.FLIP_X
+
+		--knuckles_punch_frames
+		if (knuckles_punch_frames == 0)
+		{
+			objA0.base_state = 0x0c
+			objA0.render_flags &= ~render_flag.VISIBLE
+			if (allocDynamicObjectStd())
+			{
+				objA1.update_address = 0x085b0a
+			}
+		}
+		return
+	}
+
+	if (knuckles_punch_active)
+	{
+		// Manual punch cycle from ROM data at 0x0666d2 — no animation engine calls
+		// (calling DistinctTimer triggers 0xF4 control byte → tripping sequence)
+		// Sprites: 0x20(6f) 0x21(6f) 0x22(21f) 0x23(4f) 0x24(16f) 0x21(6f) 0x20(6f) = 65 frames
+		u8 f = 65 - knuckles_punch_frames
+		if (f < 6)
+			objA0.animation.sprite = 0x20		// Stance / wind-up
+		else if (f < 12)
+			objA0.animation.sprite = 0x21		// Arm pulled back
+		else if (f < 33)
+			objA0.animation.sprite = 0x22		// Fist extended (the punch)
+		else if (f < 37)
+			objA0.animation.sprite = 0x23		// Follow-through
+		else if (f < 53)
+			objA0.animation.sprite = 0x24		// Hold / recovery
+		else if (f < 59)
+			objA0.animation.sprite = 0x21		// Arm retracting
+		else
+			objA0.animation.sprite = 0x20		// Return to stance
+
+		objA0.render_flags |= render_flag.FLIP_X
+
+		--knuckles_punch_frames
+		if (knuckles_punch_frames == 0)
+		{
+			knuckles_punch_active = false
+
+			// Save the punch position — we need it for the P3 spawn below
+			// (we're about to unload the cutscene Knuckles).
+			u16 punchX = objA0.position.x.u16
+			u16 punchY = objA0.position.y.u16
+
+			// Release emeralds at Knuckles' position
+			for (u8 i = 0; i < 7; ++i)
+			{
+				if (allocDynamicObjectStd())
+				{
+					objA1.update_address = 0x350206		// AIZIntro.Emerald.Init
+					objA1.position.x.u16 = punchX
+					objA1.position.y.u16 = punchY
+					u8[A1 + 0x2c] = i
+				}
+			}
+			playSound(0xb8)
+
+			// Spawn P3 Knuckles at the punch spot. The Knuckles3 AI will
+			// walk him over to Sonic from there using regular character
+			// running sprites.
+			if (aiz_intro_pending)
+			{
+				aiz_intro_pending = false
+
+				for (u16 i = 0; i < 0x4a; i += 2)
+					u16[P3_ADDR + i] = 0
+
+				u32[P3_ADDR] = addressof(Character.BaseUpdate.Knuckles3)
+				u8[P3_ADDR + 0x04] = render_flag.WORLD
+				u8[P3_ADDR + 0x05] = 0x00
+				u16[P3_ADDR + 0x10] = punchX
+				u16[P3_ADDR + 0x14] = punchY
+				u8[P3_ADDR + 0x20] = char.state.STANDING
+				u8[P3_ADDR + 0x38] = CHARACTER_KNUCKLES
+
+				knuckles3.ai_routine = 0
+				knuckles3.control_counter = 0
+				knuckles3.respawn_counter = 0
+				knuckles3.ai_jumping = 0
+				control.knuckles3 = 0
+				posbackup.offset.player3 = 0
+				u32[KNUCKLES3_DUST_ADDR] = 0x018b3e
+			}
+
+			// Run the full cutscene cleanup (player1.control_override = 0,
+			// title card, level start, etc.) — same as base fn061f10's
+			// non-VISIBLE branch.
+			level.palettefx.state = 0
+			player1.control_override = 0
+			fn083c06()		// AfterBoss_Cleanup (uses deprecated alias — primary name isn't visible to mod scripts)
+			fn0851e4()
+
+			if (allocDynamicObjectStd())
+			{
+				objA1.update_address = addressof(TitleCard.Update)
+			}
+
+			global.level_started = -0x6f
+			hud.dirty.timer = 0x80
+			timer.alldata = 0
+			hud.dirty.lives = 0x01
+
+			// Spawn the music-fade object (base does this from fn061eec)
+			if (allocDynamicObjectStd())
+			{
+				objA1.update_address = 0x085b0a
+			}
+
+#if STANDALONE
+			Game.endSkippableCutscene()
+#endif
+
+			// Kill the cutscene Knuckles for good
+			objA0.render_flags &= ~render_flag.VISIBLE
+			objA0.animation.sprite = 0
+			objA0.base_state = 0x0c
+			UnloadObject()
+			return
+		}
+	}
+
+	Object.CountdownAndTrigger()
+}
+
+
+//-------------------------------------------------------//
+// Knuckles punches Eggman as he runs back               //
+//-------------------------------------------------------//
+
+//# address-hook(0x35020a)
+function void AIZIntro.KnucklesPunch()
+{
+	objA0.base_state = 0x0a
+	objA0.render_flags |= render_flag.FLIP_X		// Face right (toward Eggman)
+	objA0.velocity.x = 0
+	objA0.velocity.y = 0
+
+	// Start punch animation — Eggman hit happens later when he reaches Knuckles
+	objA0.animation.timer = 0
+	objA0.animation.frame = 0
+	knuckles_punch_active = true
+	knuckles_punch_frames = 65
+
+
+	// Countdown handled by knuckles_punch_frames in fn061ee0, not CountdownAndTrigger
+	objA0.countdown_value = 9999
+	objA0.countdown_callback = 0x35020e		// Safety fallback
+}
+
+
+//-------------------------------------------------------//
+// Transition from punch to victory pose                 //
+//-------------------------------------------------------//
+
+//# address-hook(0x350216)
+function void AIZIntro.KnucklesPostPunch()
+{
+	knuckles_punch_active = false
+
+	// Stand still, facing right
+	objA0.animation.sprite = 0x16
+	objA0.velocity.x = 0
+	objA0.velocity.y = 0
+
+	// Brief pause, then release emeralds
+	objA0.countdown_value = 30
+	objA0.countdown_callback = 0x35020e		// AIZIntro.KnucklesRelease
+}
+
+
+//-------------------------------------------------------//
+// Knuckles releases the emeralds skyward                //
+//-------------------------------------------------------//
+
+//# address-hook(0x35020e)
+function void AIZIntro.KnucklesRelease()
+{
+	objA0.render_flags &= ~render_flag.FLIP_X	// Face left
+	objA0.animation.sprite = 0x16
+	objA0.velocity.y = 0
+	objA0.velocity.x = 0
+
+	for (u8 i = 0; i < 7; ++i)
+	{
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x350206		// AIZIntro.Emerald.Init
+			objA1.position.x.u16 = objA0.position.x.u16
+			objA1.position.y.u16 = objA0.position.y.u16
+			u8[A1 + 0x2c] = i
+		}
+	}
+
+	playSound(0xb8)
+
+	objA0.countdown_value = 90
+	objA0.countdown_callback = 0x350210		// AIZIntro.KnucklesJoin
+}
+
+
+//-------------------------------------------------------//
+// Knuckles joins the team                               //
+//-------------------------------------------------------//
+// Run left toward Sonic at running speed so the running
+// sprites match the velocity. The walk branch of fn061ee0
+// stops motion when Knuckles is close enough to Sonic,
+// then pins the standing sprite for the remainder.
+
+//# address-hook(0x350210)
+function void AIZIntro.KnucklesJoin()
+{
+	objA0.render_flags |= render_flag.FLIP_X	// Face left (toward Sonic) for the running sprites
+	objA0.animation.sprite = 0x12
+	objA0.velocity.x = -0x600					// Running speed — matches the running sprite cycle
+	objA0.velocity.y = 0
+	u32[A0 + 0x30] = 0x0666a9					// Running animation data
+	objA0.animation.timer = 0
+	objA0.animation.frame = 0
+
+	objA0.countdown_value = 80
+	objA0.countdown_callback = 0x350212		// AIZIntro.CutsceneEnd
+}
+
+
+//-------------------------------------------------------//
+// End cutscene                                          //
+//-------------------------------------------------------//
+
+//# address-hook(0x350212)
+function void AIZIntro.CutsceneEnd()
+{
+	objA0.velocity.x = 0
+	objA0.velocity.y = 0
+	knuckles_cutscene_ending = true
+	knuckles_punch_frames = 40				// Reuse as parked countdown
+}
+
+
+//-------------------------------------------------------//
+// fn061f10 override: cleanup + spawn P3                 //
+//-------------------------------------------------------//
+
+//# address-hook(0x061f10) end(0x061f5a)
+function void fn061f10()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061f10()
+		return
+	}
+
+	if (objA0.render_flags & render_flag.VISIBLE)
+	{
+		// Defensive: never run base's AnimationProgressByLocalA1 here — it
+		// would advance the LBZ punch anim into its fall frames. Just clear
+		// VISIBLE so the cleanup branch fires next frame.
+		objA0.render_flags &= ~render_flag.VISIBLE
+		return
+	}
+
+	// Spawn P3 Knuckles at the cutscene Knuckles' current spot (the punch
+	// position). The Knuckles3 AI walks him over to Sonic from there.
+	if (aiz_intro_pending)
+	{
+		aiz_intro_pending = false
+
+		u16 spawnX = objA0.position.x.u16
+		u16 spawnY = objA0.position.y.u16
+
+		for (u16 i = 0; i < 0x4a; i += 2)
+			u16[P3_ADDR + i] = 0
+
+		u32[P3_ADDR] = addressof(Character.BaseUpdate.Knuckles3)
+		u8[P3_ADDR + 0x04] = render_flag.WORLD
+		u8[P3_ADDR + 0x05] = 0x00
+		u16[P3_ADDR + 0x10] = spawnX
+		u16[P3_ADDR + 0x14] = spawnY
+		u8[P3_ADDR + 0x20] = char.state.STANDING
+		u8[P3_ADDR + 0x38] = CHARACTER_KNUCKLES
+
+		knuckles3.ai_routine = 0
+		knuckles3.control_counter = 0
+		knuckles3.respawn_counter = 0
+		knuckles3.ai_jumping = 0
+		control.knuckles3 = 0
+		posbackup.offset.player3 = 0
+		u32[KNUCKLES3_DUST_ADDR] = 0x018b3e
+	}
+
+	// Run base cleanup: resets player1.control_override, spawns title card,
+	// kicks off level start. Then explicitly unload — base only triggers
+	// global unloading, which doesn't clean the cutscene Knuckles slot
+	// (it lives at 0xfffffaa4, outside the dynamic pool).
+	base.fn061f10()
+	UnloadObject()
+}
+
+
+//-------------------------------------------------------//
+// fn061eec override: block base run-away                //
+//-------------------------------------------------------//
+
+//# address-hook(0x061eec) end(0x061f0e)
+function void fn061eec()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn061eec()
+		return
+	}
+	AIZIntro.CutsceneEnd()
+}
+
+
+//=======================================================//
+// Eggman Cutscene Object                                //
+//=======================================================//
+
+//# address-hook(0x350200)
+function void AIZIntro.Eggman.Init()
+{
+	objA0.update_address = 0x350202
+
+	requestLoadingPatterns(0x76)		// Robotnik running/standing
+
+	objA0.mapping_offset = 0x06837e
+	objA0.sprite_attributes = (sprite_attribute.PRIORITY | 0x04a9)
+	objA0.render_flags = render_flag.WORLD		// Face left
+	objA0.sprite_priority = 0x0280
+	objA0.box_size.x = 0x18
+	objA0.box_size.y = 0x18
+	objA0.animation.sprite = 0x00
+	objA0.velocity.x = -0x600
+	objA0.velocity.y = 0
+	eggman_cutscene_timer = 0
+
+	loadPaletteLine1(0x069e80)
+
+	AIZIntro.Eggman.Run()
+}
+
+//# address-hook(0x350202)
+function void AIZIntro.Eggman.Run()
+{
+	++eggman_cutscene_timer
+
+	// Phase 1: run left for 140 frames
+	if (eggman_cutscene_timer <= 140)
+	{
+		objA0.velocity.x = -0x600
+		objA0.render_flags &= ~render_flag.FLIP_X
+	}
+	else
+	{
+		// Phase 2: run right until reaching Knuckles' X position
+		objA0.velocity.x = 0x0600
+		objA0.render_flags |= render_flag.FLIP_X
+
+		// Start Knuckles' punch animation early (while Eggman is still running)
+		// Trigger punch 252px (42 frames = 0.5s + 12f wind-up) before Eggman arrives
+		if (!knuckles_punch_active && objA0.position.x.u16 >= knuckles_cutscene_x - 0xFC)
+		{
+			s16[knuckles_cutscene_addr + 0x2e] = 0		// Trigger punch countdown
+		}
+
+		// Eggman reaches Knuckles — punch connects
+		if (objA0.position.x.u16 >= knuckles_cutscene_x)
+		{
+camera.screenshake.state = 0x14
+			playSound(0x62)
+
+			objA0.velocity.x = 0x800
+			objA0.velocity.y = -0x500
+			objA0.render_flags |= render_flag.FLIP_X
+			objA0.update_address = 0x350204		// AIZIntro.Eggman.Punched
+
+			u16[0xfffffaa4] = knuckles_cutscene_addr & 0xffff
+		}
+	}
+
+	UpdateMovementStraightSimple()
+
+	// Animate running
+	if ((eggman_cutscene_timer & 0x07) < 4)
+		objA0.animation.sprite = 0x00
+	else
+		objA0.animation.sprite = 0x01
+
+	DrawObject()
+}
+
+//# address-hook(0x350214)
+function void AIZIntro.Eggman.WaitForPunch()
+{
+	// Just stand still and draw — KnucklesPunch will change us to Punched
+	objA0.animation.sprite = 0x00
+	DrawObject()
+}
+
+//# address-hook(0x350204)
+function void AIZIntro.Eggman.Punched()
+{
+	objA0.velocity.y += 0x20		// Gravity
+	UpdateMovementStraightSimple()
+
+	objA0.animation.sprite = 0x02
+
+	if (objA0.render_flags & render_flag.VISIBLE)
+	{
+		DrawObject()
+	}
+	else
+	{
+		eggman_cutscene_addr = 0
+		UnloadObject()
+	}
+}
+
+
+//=======================================================//
+// Emerald Ascension Objects                             //
+//=======================================================//
+
+//# address-hook(0x350206)
+function void AIZIntro.Emerald.Init()
+{
+	setupObjectAttributesFull(0x067a4e)
+
+	objA0.update_address = 0x350208
+	objA0.render_flags |= render_flag.VISIBLE
+
+	u8 idx = u8[A0 + 0x2c]
+	u8[A0 + 0x3c] = idx * 36
+	u16[A0 + 0x3a] = 0
+	objA0.animation.sprite = idx
+	objA0.velocity.y = -0x180
+
+	AIZIntro.Emerald.Ascend()
+}
+
+//# address-hook(0x350208)
+function void AIZIntro.Emerald.Ascend()
+{
+	objA0.velocity.y += 0x02
+	UpdateMovementStraightSimple()
+
+	u16 radius = u16[A0 + 0x3a]
+	radius += 0x08
+	if (radius > 0x0800)
+	{
+		UnloadObject()
+		return
+	}
+	u16[A0 + 0x3a] = radius
+	u8[A0 + 0x3c] += 3
+
+	D0.u8 = u8[A0 + 0x3c]
+	LookupSinCos()
+	D2.u16 = radius
+	D3.u16 = radius
+	D2.s32 = s32(D2.s16) * D0.s16
+	D2 = (D2 << 16) + (D2 >> 16)
+	D3.s32 = s32(D3.s16) * D1.s16
+	D3 = (D3 << 16) + (D3 >> 16)
+	objA0.position.x.u16 += D2.s16
+	objA0.position.y.u16 += D3.s16
+
+	if (global.framecounter & 0x01)
+	{
+		DrawObject()
+	}
+}

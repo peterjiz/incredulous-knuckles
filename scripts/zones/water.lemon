@@ -1,0 +1,66 @@
+
+//-------------------------------------------------------//
+// Water: Initialization + P3 underwater handling        //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// Water Level Initialization — path-based, not character-based
+//=============================================================
+
+function void Level.InitializeWater()
+{
+	// AIZ2: suppress water when on Knuckles' lower path (any character)
+	if (useSonicTailsAndKnuckles && global.zone_act == 0x0001)
+	{
+		u16 py = u16[0xffffb000 + 0x14]
+		if (py >= 0x0620)
+		{
+			level.water_present = 0
+			water.height.current = WATER_OFF_HEIGHT
+			water.height.next = WATER_OFF_HEIGHT
+			water.height.target = WATER_OFF_HEIGHT
+			return
+		}
+	}
+
+	// CNZ2: if the player toggled water off before a checkpoint,
+	// suppress water entirely on restart
+	if (useSonicTailsAndKnuckles && global.zone_act == 0x0301 && cnz2_water_off)
+	{
+		level.water_present = 0
+		water.height.current = WATER_OFF_HEIGHT
+		water.height.next = WATER_OFF_HEIGHT
+		water.height.target = WATER_OFF_HEIGHT
+		return
+	}
+
+	base.Level.InitializeWater()
+}
+
+
+//=============================================================
+// P3 underwater processing
+//=============================================================
+
+//# address-hook(0x00714e)
+function void fn00714e()
+{
+	base.fn00714e()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		if (global.zone_act == 0x0101)
+		{
+			A1 = P3_ADDR
+			D2.u8 = control.knuckles3.state
+			fn00717c()
+		}
+		else if (global.zone_act == 0x0500)
+		{
+			A1 = P3_ADDR
+			D2.u8 = control.knuckles3.state
+			fn0071e4()
+		}
+	}
+}

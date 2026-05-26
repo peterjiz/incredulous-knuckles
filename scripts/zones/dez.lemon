@@ -1,0 +1,40 @@
+
+//-------------------------------------------------------//
+// DEZ: Death Egg Zone                                   //
+//-------------------------------------------------------//
+
+
+//-------------------------------------------------------//
+// DEZ Final Boss 3: Hit Knockback                       //
+//-------------------------------------------------------//
+// fn080e2c uses u8[A0 + 0x1c] to determine which player
+// to knock back after hitting the boss. Values 0 -> P1,
+// else -> P2. P3 collision may set 0x1c to a different
+// value. We apply the same knockback to P3 if close.
+// Type: KNOCKBACK - stops player velocity on boss hit.
+
+//# address-hook(0x080e2c)
+function void fn080e2c()
+{
+	base.fn080e2c()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// If boss was just hit (state counting down) and has
+	// the forward-rush flag, also stop P3 if nearby
+	if (objA0.state != 0 && (objA0.flags38 & 0x80))
+	{
+		A1 = P3_ADDR
+		if (u32[A1] != 0)
+		{
+			s16 dx = s16(objA0.position.x.u16) - s16(objA1.position.x.u16)
+			s16 dy = s16(objA0.position.y.u16) - s16(objA1.position.y.u16)
+			if (abs(dx) < 0x30 && abs(dy) < 0x30)
+			{
+				objA1.velocity.x = 0
+				objA1.groundspeed = 0
+			}
+		}
+	}
+}

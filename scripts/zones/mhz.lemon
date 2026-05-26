@@ -1,0 +1,211 @@
+
+//-------------------------------------------------------//
+// MHZ: Mushroom Hill Zone                               //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// MHZ1 & MHZ2: Remove left camera lock to allow jumping
+// down to Knuckles' path from the left side of the level
+//=============================================================
+
+//# address-hook(0x054b80)
+function void fn054b80()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		move_area.left = 0
+		return
+	}
+	base.fn054b80()
+}
+
+
+//=============================================================
+// MHZ1: Remove NPC Knuckles cutscene + make button interactive
+//=============================================================
+
+//# address-hook(0x062e28)
+function void fn062e28()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		setupObjectAttributesFull(0x06644a)
+		spawnSimpleChildObjects(0x06300c, 1)
+		objA0.update_address = 0x062f0a
+		DrawObject()
+		return
+	}
+	base.fn062e28()
+}
+
+//# address-hook(0x062b3a)
+function void fn062b3a()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		UnloadObject()
+		return
+	}
+	base.fn062b3a()
+}
+
+//# address-hook(0x062ca4)
+function void fn062ca4()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		UnloadObject()
+		return
+	}
+	base.fn062ca4()
+}
+
+
+// MHZ2: Remove left camera lock + vertical wrap near the start
+//# address-hook(0x054d8c)
+function void UpdateLevelTiles.MHZ2()
+{
+	base.UpdateLevelTiles.MHZ2()
+
+	if (useSonicTailsAndKnuckles)
+	{
+		u16 py = u16[0xffffb000 + 0x14]
+		u16 px = u16[0xffffb000 + 0x10]
+
+		// Near the left drop zone: remove left lock + vertical wrap
+		if (px < 0x0400 && py < 0x0800)
+		{
+			move_area.left = 0
+			level.vertical_wrap = 0
+		}
+
+		// In the transition zone between paths
+		if (py >= 0x05c0 && py < 0x0800)
+		{
+			move_area.left = 0
+		}
+	}
+}
+
+
+//=============================================================
+// MHZ2: Press Y near wall lever to activate fan
+//=============================================================
+
+//# address-hook(0x0630e0)
+function void fn0630e0()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn0630e0()
+		return
+	}
+
+	// First frame: spawn the visible lever child object
+	if (objA0.base_state == 0x00)
+	{
+		spawnChildObject(0x0632ca, 0x00, -8, 0)
+		objA0.base_state = 0x02
+		objA0.render_flags = render_flag.WORLD
+	}
+
+	// Every frame: check if P1 is near the lever and presses Y
+	s16 dx = s16(u16[0xffffb000 + 0x10]) - s16(objA0.position.x.u16 - 8)
+	s16 dy = s16(u16[0xffffb000 + 0x14]) - s16(objA0.position.y.u16)
+	if (abs(dx) < LEVER_DETECT_X && abs(dy) < LEVER_DETECT_Y)
+	{
+		if (Input.buttonPressed(BUTTON_Y))
+		{
+			objA0.animation.sprite = 0x02
+			playSoundRepeatedly(0xda)
+			camera.screenshake.state = 0x14
+
+			// Spawn lift object for P1
+			if (allocDynamicObjectStd())
+			{
+				objA1.update_address = 0x06338e
+				objA1.position.x.u16 = u16[0xffffb000 + 0x10]
+				objA1.position.y.u16 = u16[0xffffb000 + 0x14]
+			}
+
+			// Spawn lift object for P2
+			if (u32[0xffffb04a] != 0)
+			{
+				if (allocDynamicObjectStd())
+				{
+					objA1.update_address = 0x06338e
+					objA1.subtype2c = 0x02
+					objA1.position.x.u16 = u16[0xffffb04a + 0x10]
+					objA1.position.y.u16 = u16[0xffffb04a + 0x14]
+				}
+			}
+
+			// Spawn lift object for P3
+			if (u32[P3_ADDR] != 0)
+			{
+				if (allocDynamicObjectStd())
+				{
+					objA1.update_address = 0x06338e
+					objA1.subtype2c = 0x02
+					objA1.position.x.u16 = u16[P3_ADDR + 0x10]
+					objA1.position.y.u16 = u16[P3_ADDR + 0x14]
+				}
+			}
+
+			UnloadObject()
+			return
+		}
+	}
+
+	CheckForUnloadObject()
+}
+
+
+
+//-------------------------------------------------------//
+// MHZ 2 Boss: Hit Reaction Knockback                    //
+//-------------------------------------------------------//
+// fn076782 applies knockback to the player who hit the
+// boss, using u8[A0 + 0x1c] to pick P1 or P2.
+// Type: KNOCKBACK - stops the hitting player's velocity.
+// The character index check (0x1c) maps 0 -> P1, else P2.
+// P3 uses collision index from Character collision system
+// which already sets 0x1c. No override needed IF the
+// collision system handles P3 and stores a distinguishing
+// value in 0x1c. We add a safety net.
+
+//# address-hook(0x076782)
+function void fn076782()
+{
+	base.fn076782()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	// If the boss was just hit and state is counting down,
+	// and the hitter was P3 (0x1c value >= 2 maps to P2 in base,
+	// but P3 collision could set values beyond that), ensure P3
+	// also gets stopped.
+	// Since the base already handles the knockback for whoever
+	// hit (via 0x1c -> A1 address), we just need to check if P3
+	// was the one who hit and is not being handled.
+	// The safest approach: if P3 is in a spin attack state and
+	// very close to the boss, apply the same velocity stop.
+	if (objA0.state != 0)
+	{
+		A1 = P3_ADDR
+		if (u32[A1] != 0)
+		{
+			s16 dx = s16(objA0.position.x.u16) - s16(objA1.position.x.u16)
+			s16 dy = s16(objA0.position.y.u16) - s16(objA1.position.y.u16)
+			if (abs(dx) < 0x30 && abs(dy) < 0x30)
+			{
+				if (u8[A1 + 0x20] == char.state.ROLLING || u8[A1 + 0x20] == char.state.SPINDASH)
+				{
+					objA1.velocity.x = 0
+				}
+			}
+		}
+	}
+}

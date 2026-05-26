@@ -1,0 +1,152 @@
+
+// Character combo constant
+constant u16 CHARS_SONIC_TAILS_AND_KNUCKLES = 5
+
+// P3 object state at slot 93 (0xFFFFCAE2) in the object table.
+// This is the allocator's last slot — we override allocDynamicObjectStd
+// and allocDynamicObjectAfterA0 to shrink the range by 1, reserving it.
+// Slot 2 (0xffffb094) is left for the engine's ResetDynamicObjectList.
+constant u32 P3_ADDR = 0xffffcae2
+
+// Global flag
+global bool useSonicTailsAndKnuckles
+
+
+//=============================================================
+// Named Constants — AI & Gameplay
+//=============================================================
+
+// AI respawn: max distance from P1 before teleport
+constant u16 AI_RESPAWN_MAX_DISTANCE_X = 0x300
+constant u16 AI_RESPAWN_MAX_DISTANCE_Y = 0x200
+constant u16 AI_RESPAWN_OFFSCREEN_TIMEOUT = 300
+
+// Glide-in descent rate (pixels per frame)
+constant u16 GLIDEIN_DESCENT_RATE = 2
+constant u8 GLIDE_SAFETY_TIMEOUT = 90
+
+// AI follow offset (so Knuckles doesn't overlap Tails)
+constant u16 AI_FOLLOW_OFFSET_X = 0x30
+constant u16 AI_JUMP_THRESHOLD_X = 0x30
+constant u16 AI_JUMP_THRESHOLD_Y = 0x30
+
+// Character swap
+constant u16 SWAP_COOLDOWN_FRAMES = 30
+
+// Cutscene button detection (shared across zones)
+constant u16 BUTTON_DETECT_X = 0x18
+constant u16 BUTTON_DETECT_Y_ABOVE = 0x14
+constant u16 BUTTON_DETECT_Y_BELOW = 0x04
+constant u16 BUTTON_COOLDOWN_FRAMES = 90
+constant u16 BUTTON_LEAVE_DISTANCE = 0x20
+
+// MHZ lever detection
+constant u16 LEVER_DETECT_X = 0x20
+constant u16 LEVER_DETECT_Y = 0x30
+
+// Water heights
+constant u16 WATER_OFF_HEIGHT = 0x1000
+
+// Formation system
+constant u8 FORMATION_DETACH_TIMEOUT = 60
+constant u16 FORMATION_CHAIN_OFFSET_Y = 0x1c
+constant u16 CARRY_GRAB_RANGE_X = 0x20
+constant u16 CARRY_GRAB_RANGE_Y = 0x10
+
+// HPZ cutscene timing
+constant u16 HPZ_HANDOFF_JUMP_FRAMES = 8
+constant u16 HPZ_AUTO_ADVANCE_TIMEOUT = 0x300
+
+
+// Knuckles AI control variables — shared memory block at 0x818450
+define knuckles3.control_counter = u16[0x818450]		// Time in frames until AI takes over control again
+define knuckles3.respawn_counter = u16[0x818452]		// Counts up when Knuckles3 is offscreen, until 300 frames
+define knuckles3.ai_routine      = u16[0x818454]		// AI state machine routine
+define knuckles3.flight_target.x = u16[0x818456]		// Glide-in target position X
+define knuckles3.flight_target.y = u16[0x818458]		// Glide-in target position Y
+define knuckles3.ai_jumping      =  u8[0x81845a]		// Flag: AI initiated a jump
+define knuckles3.glide_timer     =  u8[0x81845b]		// Safety timer: auto-cancel glide after timeout
+
+// Control register for 3rd character — shared memory (was 0xfffff66c which
+// conflicts with super.palettefx.frame.tails / super.palettefx.timer.tails)
+define control.knuckles3         = u16[0x81845c]
+define control.knuckles3.state   =  u8[0x81845c]
+define control.knuckles3.pressed =  u8[0x81845d]
+
+// Position backup offset for player 3 — shared memory (was 0xffffb75c which
+// is inside dynamic object slot 25, corrupting animation data)
+define posbackup.offset.player3  = u16[0x81845e]
+
+// Shared memory: Player 3 position backup buffer (256 bytes = 64 entries of 4 bytes)
+//   0x818100 .. 0x8181ff  -> Position backup (x, y pairs)
+//   0x818200 .. 0x8182ff  -> State backup (control, flags)
+
+// Tails carrying Knuckles3 flag (parallels tails.carrying at 0xfffff73e)
+// Using shared memory to avoid conflicts with Knuckles movement code
+define tails.carrying_knuckles3    = u8[0x818300]
+define tails.catch_timeout_knuckles3 = u8[0x818301]
+define tails.carried_velocity_x_k3 = s16[0x818302]
+define tails.carried_velocity_y_k3 = s16[0x818304]
+
+// Formation detach timeout (prevents immediate re-attach after jumping off)
+define formation.sonic_detach_timeout = u8[0x81830c]
+define formation.knuckles3_detach_timeout = u8[0x81830d]
+
+// Knuckles3 carrying Sonic (Heroes-style)
+define knuckles3.carrying_sonic      = u8[0x818306]
+define knuckles3.catch_timeout_sonic = u8[0x818307]
+define knuckles3.carried_vel_x_sonic = s16[0x818308]
+define knuckles3.carried_vel_y_sonic = s16[0x81830a]
+
+// Dust cloud slot for 3rd character
+// 0xffffcce8 is shield, 0xffffcc54 is P1 dust, 0xffffcc9e is P2 dust
+// We'll use 0xffffcd32 (secondary shield slot, leftover from Sonic 2 VS) for P3 dust
+constant u32 KNUCKLES3_DUST_ADDR = 0xffffcd32
+
+// Camera Y offset for P3 (safe scratch space, movement writes here harmlessly)
+define camera.yoffset.knuckles3 = u16[0x81830e]
+
+// Character swap state
+global u16 swap_cooldown_timer
+global u16 swap_hud_timer			// Countdown to hide swap HUD indicator
+global u8 swap_controlled_char		// Which character the player is controlling (persists across levels)
+global bool swap_chars_ready		// True after InitializeGameCharacters finishes (gates isMainCharacter override)
+global bool aiz_intro_pending		// True during AIZ1 intro; P3 spawns when cutscene ends
+
+
+//=============================================================
+// Utility Functions
+//=============================================================
+
+function u8 getThirdCharacter()
+{
+	if (useSonicTailsAndKnuckles)
+		return CHARACTER_KNUCKLES
+	return 0xff
+}
+
+function u8 getNumPlayers()
+{
+	if (useSonicTailsAndKnuckles)
+		return 3
+	return base.getNumPlayers()
+}
+
+function u32 getPlayerAddress(u8 index)
+{
+	if (index == 0)
+		return 0xffffb000
+	else if (index == 1)
+		return 0xffffb04a
+	else if (index == 2)
+		return P3_ADDR
+	return 0xffffb000
+}
+
+
+// Mod settings (exposed via mod.json Settings.List)
+global u8 option.allow_ssz_access		// 0 = HPZ teleporter disabled, 1 = enabled
+global u8 option.hyper_speed_mode		// 0 = each character uses own speeds, 1 = all use Sonic's
+global u8 option.disable_hpz_miniboss	// 0 = keep Knuckles mini-boss, 1 = skip to Robotnik cutscene
+global u8 option.erz_flight_cancel		// 0 = disabled, 1 = A button cancels ERZ flight
+global u8 option.hyper_flickies			// 0 = no flickies, 1 = spawn Super Flickies when Hyper

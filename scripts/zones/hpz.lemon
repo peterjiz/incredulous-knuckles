@@ -1,0 +1,542 @@
+
+//-------------------------------------------------------//
+// HPZ: Hidden Palace Zone                               //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// HPZ: SSZ teleporter / Knuckles fight (configurable)
+//=============================================================
+// option.allow_ssz_access = 0 -> teleporter disabled, fight enabled
+// option.allow_ssz_access = 1 -> teleporter behaves like base game
+
+//# address-hook(0x045528)
+function void fn045528()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn045528()
+		return
+	}
+	if (option.allow_ssz_access != 0)
+	{
+		base.fn045528()
+		if (global.zone == 0x16)
+		{
+			objA0.subtype2c = 0x4a
+		}
+		return
+	}
+	if (isMainCharacter(CHARACTER_KNUCKLES))
+	{
+		base.fn045528()
+		return
+	}
+	UnloadObject()
+}
+
+// Teleporter trigger — any character can use it in 3-char mode.
+//# address-hook(0x045b94)
+function void fn045b94()
+{
+	if (useSonicTailsAndKnuckles && option.allow_ssz_access != 0)
+	{
+		if (u8[0xffffeed6] == 0)
+			return
+
+		if (camera.position.y.u16 >= 0x0240 || u16[0xffffb000 + 0x10] < 0x0b00)
+			return
+
+		playMusic(MUSIC_CTRL_FADEOUT)
+		sram.block_interrupts.u8 = 0xff
+		SaveGameOnLevelFinished()
+
+		u16 dest = 0x0a01
+		if (u16[0xffffb000 + 0x10] >= 0x1400)
+		{
+			dest = 0x0a00
+		}
+		TriggerNextZone(dest)
+		return
+	}
+	base.fn045b94()
+}
+
+
+//=============================================================
+// HPZ: Cutscene state
+//=============================================================
+
+global bool hpz_cutscene_triggered
+global u16 hpz_auto_advance_timer
+global bool hpz_npc_cutscene_active
+global u8 hpz_npc_handoff_state
+global u16 hpz_npc_handoff_timer
+global u16 hpz_camera_ctrl_addr
+global u32 hpz_knuckles_addr
+global bool hpz_knuckles_was_p1
+
+//# address-hook(0x05a12e)
+function void InitLevelTiles.HPZ()
+{
+	hpz_cutscene_triggered = false
+	hpz_auto_advance_timer = 0
+	hpz_npc_cutscene_active = false
+	hpz_npc_handoff_state = 0
+	hpz_npc_handoff_timer = 0
+	hpz_camera_ctrl_addr = 0
+	hpz_knuckles_addr = P3_ADDR
+	hpz_knuckles_was_p1 = false
+	base.InitLevelTiles.HPZ()
+
+	if (useSonicTailsAndKnuckles && option.disable_hpz_miniboss != 0)
+	{
+		u8[0xfffffab8] = 0
+	}
+}
+
+//# address-hook(0x05a158)
+function void InitLevelScrolling.HPZ()
+{
+	base.InitLevelScrolling.HPZ()
+
+	if (useSonicTailsAndKnuckles && option.disable_hpz_miniboss != 0)
+	{
+		if (!hpz_cutscene_triggered)
+		{
+			if (u16[0xffffb000 + 0x10] >= 0x14d0 && u16[0xfffffaa4] != 0)
+			{
+				hpz_cutscene_triggered = true
+				hpz_npc_cutscene_active = true
+				HPZ.WarmStartCutscene()
+			}
+		}
+
+		if (hpz_npc_cutscene_active)
+		{
+			u16[hpz_knuckles_addr + 0x10] = 0
+			u16[hpz_knuckles_addr + 0x14] = 0
+		}
+
+		HPZ.UpdateNpcHandoff()
+
+		if (hpz_cutscene_triggered)
+		{
+			HPZ.CheckWallBreak()
+		}
+	}
+}
+
+
+//=============================================================
+// HPZ: Warm-start cutscene (skip miniboss, jump to Eggman)
+//=============================================================
+
+function void HPZ.WarmStartCutscene()
+{
+	// Find which slot Knuckles occupies
+	hpz_knuckles_was_p1 = false
+	if (u8[0xffffb000 + 0x38] == CHARACTER_KNUCKLES)
+	{
+		u32 sonicAddr = CharacterSwap.FindCharacterSlot(CHARACTER_SONIC)
+		if (sonicAddr != 0 && sonicAddr != 0xffffb000)
+		{
+			CharacterSwap.SwapSlots(0xffffb000, sonicAddr)
+			CharacterSwap.FixupAfterSwap()
+			hpz_knuckles_addr = sonicAddr
+			hpz_knuckles_was_p1 = true
+			swap_controlled_char = u8[0xffffb000 + 0x38]
+		}
+		else
+		{
+			hpz_knuckles_addr = 0xffffb000
+		}
+	}
+	else if (u8[0xffffb04a + 0x38] == CHARACTER_KNUCKLES)
+	{
+		hpz_knuckles_addr = 0xffffb04a
+	}
+	else
+	{
+		hpz_knuckles_addr = P3_ADDR
+	}
+
+	// Hide Knuckles — NPC takes over
+	u16[hpz_knuckles_addr + 0x10] = 0
+	u16[hpz_knuckles_addr + 0x14] = 0
+	u8[hpz_knuckles_addr + 0x2e] = control_flag.DISABLE_UPDATE
+	if (hpz_knuckles_addr == P3_ADDR)
+	{
+		knuckles3.ai_routine = 0x0a
+	}
+
+	// Clear NPC object memory
+	u32 npc = 0xffff0000 + u16[0xfffffaa4]
+	u32 i = 4
+	while (i < 0x4a)
+	{
+		u8[npc + i] = 0
+		++i
+	}
+
+	// Set up NPC at state 0x24 (emerald room, shaking fist)
+	u8[npc + 0x04] = render_flag.WORLD | render_flag.VISIBLE
+	u8[npc + 0x05] = 0x24
+	u8[npc + 0x06] = 0x18
+	u8[npc + 0x07] = 0x18
+	u8[npc + 0x1e] = 0x13
+	u8[npc + 0x1f] = 0x09
+	u16[npc + 0x08] = 0x0100
+	u16[npc + 0x0a] = sprite_attribute.PALETTE.LINE1 | 0x04da
+	u32[npc + 0x0c] = 0x066f36
+	u16[npc + 0x10] = 0x1620
+	u16[npc + 0x14] = 0x03ac
+	u8[npc + 0x22] = 0x0a
+	u32[npc + 0x30] = 0x06687b
+	u16[npc + 0x44] = 0x02
+	u8[npc + 0x0a] |= 0x80
+	u32[npc] = 0x063de0
+
+	// Clear cutscene flags
+	u8[0xfffffab8] = 0
+	camera.screenshake.state = 0
+
+	// Camera boundaries
+	camera.position.y.u16 = 0x02e0
+	move_area.bottom.current = 0x02e0
+	move_area.bottom.target = 0x02e0
+	level.vertical_wrap = 0x0240
+	screenmover_target.right = 0x1820
+	screenmover_target.bottom = 0x02e0
+
+	// Spawn camera controller
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x064c70
+		hpz_camera_ctrl_addr = A1.u16
+	}
+
+	// Spawn Egg Mobile
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x064e88
+	}
+
+	// Spawn screen movers
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x084a48
+	}
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x084aa4
+	}
+	move_area.bottom.target = screenmover_target.bottom
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x084ad2
+	}
+
+	// Load Egg Mobile sprites
+	Kosinski.addToDMAQueue(0x1607d8, 0x94e0)
+	addPatternLoadingCue(0x064516)
+
+	// Full tile refill
+	camera.foreground.x.u16 = camera.position.x.u16
+	camera.foreground.y.u16 = camera.position.y.u16
+
+	A0 = 0xfffff100
+	A2 = 0xffff9000
+
+	Level.GetCameraPosition()
+	Level.InitialTilesFill()
+
+	// Plane B (background)
+	u32 savedA3 = A3
+	u16 savedD7 = D7.u16
+	A3 = 0xffff800a
+	D7.u16 = 0xe000
+
+	fn05a334()
+	fn04f2f6()
+
+	A1 = 0xffffa800
+	u16[A1 + 2] = u16[A1] & 0xfff0
+	u16[A1 + 6] = u16[A1 + 4] & 0xfff0
+
+	A0 = 0xfffff100
+	A4 = 0x05a39c
+	A5 = 0xffffa800
+	fn04ecec()
+
+	A4 = 0x05a3a0
+	A5 = 0xffffa808
+	fn04f0ce()
+
+	A3 = savedA3
+	D7.u16 = savedD7
+
+	level.scrolling_routine = 8
+}
+
+
+//=============================================================
+// HPZ: NPC → Player handoff state machine
+//=============================================================
+
+function void HPZ.UpdateNpcHandoff()
+{
+	if (hpz_npc_handoff_state == 0)
+		return
+
+	u32 npc = 0xffff0000 + u16[0xfffffaa4]
+
+	// State 1: NPC jumping after hitting the ground
+	if (hpz_npc_handoff_state == 1)
+	{
+		++hpz_npc_handoff_timer
+
+		if (hpz_npc_handoff_timer == 1)
+		{
+			u32[npc] = 0x350402
+			u16[npc + 0x44] = 0
+			u32[npc + 0x0c] = 0x14a8d6
+			u8[npc + 0x22] = 0x9a
+			u8[npc + 0x0a] |= 0x80
+			s16[npc + 0x1a] = -0x400
+			u16[npc + 0x18] = 0
+		}
+
+		// Apply gravity and move
+		s16 vy = s16[npc + 0x1a] + 0x38
+		s16[npc + 0x1a] = vy
+		u16[npc + 0x14] = u16(s16(u16[npc + 0x14]) + (vy >> 8))
+
+		if (hpz_npc_handoff_timer >= HPZ_HANDOFF_JUMP_FRAMES)
+		{
+			u16 nx = u16[npc + 0x10]
+			u16 ny = u16[npc + 0x14]
+			s16 nvy = s16[npc + 0x1a]
+
+			// Unload NPC
+			u32[npc] = 0
+
+			// Re-enable Knuckles at NPC's position
+			u32 ka = hpz_knuckles_addr
+			u16[ka + 0x10] = nx
+			u16[ka + 0x14] = ny
+			u16[ka + 0x18] = 0
+			s16[ka + 0x1a] = nvy
+			u8[ka + 0x04] |= render_flag.VISIBLE
+			u8[ka + 0x2e] = 0
+			u8[ka + 0x2a] |= char.flag.IN_AIR
+			u8[ka + 0x20] = char.state.ROLLING
+
+			// Swap back if needed
+			if (hpz_knuckles_was_p1)
+			{
+				CharacterSwap.SwapSlots(0xffffb000, ka)
+				CharacterSwap.FixupAfterSwap()
+				hpz_knuckles_addr = 0xffffb000
+				swap_controlled_char = CHARACTER_KNUCKLES
+				hpz_knuckles_was_p1 = false
+			}
+
+			if (hpz_knuckles_addr == P3_ADDR)
+			{
+				knuckles3.ai_routine = 0x0a
+			}
+
+			// Kill the cutscene
+			hpz_npc_cutscene_active = false
+
+			if (hpz_camera_ctrl_addr != 0)
+			{
+				u32[0xffff0000 + hpz_camera_ctrl_addr] = 0
+				hpz_camera_ctrl_addr = 0
+			}
+
+			player1.control_override = 0
+			player2.control_override = 0
+			player1.camera_lock = 0
+			u8[0xffffb000 + 0x2e] = 0
+			u8[0xffffb04a + 0x2e] = 0
+			Game.endSkippableCutscene()
+
+			move_area.left = 0
+			move_area.right = 0x3000
+			move_area.bottom.current = 0x05c0
+			move_area.bottom.target = 0x05c0
+			screenmover_target.bottom = 0x05c0
+			level.vertical_wrap = 0
+
+			HPZ.TriggerGroundCollapse()
+			hpz_npc_handoff_state = 2
+			hpz_npc_handoff_timer = 0
+		}
+		return
+	}
+
+	// State 2: Floor collapse sequence
+	if (hpz_npc_handoff_state == 2)
+	{
+		++hpz_npc_handoff_timer
+
+		if (hpz_npc_handoff_timer == 0x10)
+		{
+			u8[0xffffeec4] = 0xff
+			camera.screenshake.state = 0x14
+
+			if (allocDynamicObjectStd())
+			{
+				objA1.update_address = 0x0655b2
+			}
+
+			u8[0xffffb000 + 0x20] = char.state.FALLING_PANIC
+			u8[0xffffb000 + 0x2a] |= char.flag.IN_AIR
+			u8[0xffffb04a + 0x20] = char.state.FALLING_PANIC
+			u8[0xffffb04a + 0x2a] |= char.flag.IN_AIR
+			u8[P3_ADDR + 0x20] = char.state.FALLING_PANIC
+			u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+		}
+
+		if (hpz_npc_handoff_timer >= 0x20)
+		{
+			if (hpz_knuckles_addr == P3_ADDR)
+			{
+				knuckles3.ai_routine = 0x06
+			}
+			hpz_npc_handoff_state = 0
+		}
+	}
+}
+
+
+function void HPZ.TriggerGroundCollapse()
+{
+	player1.camera_lock = 0
+	move_area.bottom.target = 0x05c0
+	screenmover_target.bottom = 0x05c0
+	playSound(0xcc)
+	camera.screenshake.state = 0x14
+
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x084ad2
+	}
+}
+
+function void HPZ.CheckWallBreak()
+{
+	if (u8[0xfffffaa2] != 0)
+		return
+
+	if (u8[0xffffb000 + 0x38] != CHARACTER_KNUCKLES)
+		return
+
+	u16 px = u16[0xffffb000 + 0x10]
+	u16 py = u16[0xffffb000 + 0x14]
+	s16 dx = s16(px) - s16(0x17f0)
+	s16 dy = s16(py) - s16(0x0660)
+	bool inRange = (abs(dx) < 0x30 && abs(dy) < 0x8c)
+	if (inRange)
+	{
+		u8[0xfffffaa2] = 0xff
+		playSound(SFX_COLLAPSE)
+		camera.screenshake.state = 0x14
+	}
+}
+
+
+//=============================================================
+// HPZ: NPC Knuckles spawn / state hooks
+//=============================================================
+
+//# address-hook(0x063d1a)
+function void fn063d1a()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn063d1a()
+		return
+	}
+	if (option.disable_hpz_miniboss != 0)
+	{
+		objA0.update_address = 0x350400
+		objA0.mapping_offset = 0x14a8d6
+		objA0.sprite_attributes = (sprite_attribute.PALETTE.LINE1 | 0x04da)
+		objA0.sprite_priority = 0x0100
+		objA0.box_size.x = 0x18
+		objA0.box_size.y = 0x18
+		objA0.hitbox_extends.x = char.hitbox.x.UPRIGHT
+		objA0.hitbox_extends.y = char.hitbox.y.UPRIGHT
+		objA0.render_flags = render_flag.WORLD
+		objA0.animation.sprite = 0xd8
+		u32[A0 + 0x30] = 0x066771
+		u16[A0 + 0x44] = 0
+
+		copyMemory(0xfffffca0, 0xfffffc20, 0x20)
+		CutsceneKnuckles.loadPalette()
+		u16[0xfffffc2c] = 0x88
+		return
+	}
+	if (option.allow_ssz_access != 0)
+	{
+		base.fn063d1a()
+		return
+	}
+	if (isMainCharacter(CHARACTER_KNUCKLES))
+	{
+		UnloadObject()
+		return
+	}
+	base.fn063d1a()
+}
+
+//# address-hook(0x350400)
+function void HPZ.NpcKnuckles.Parked()
+{
+}
+
+//# address-hook(0x350402)
+function void HPZ.NpcKnuckles.JumpAndDraw()
+{
+	fn0661e0()
+	DrawObject()
+}
+
+//# address-hook(0x064fa0)
+function void fn064fa0()
+{
+	if (useSonicTailsAndKnuckles && option.disable_hpz_miniboss != 0)
+	{
+		++hpz_auto_advance_timer
+		if (hpz_auto_advance_timer >= HPZ_AUTO_ADVANCE_TIMEOUT)
+		{
+			u8[0xfffffab8] |= 0x20
+		}
+	}
+	base.fn064fa0()
+}
+
+//# address-hook(0x0648b8)
+function void fn0648b8()
+{
+	base.fn0648b8()
+	if (useSonicTailsAndKnuckles && option.disable_hpz_miniboss != 0 && hpz_npc_cutscene_active)
+	{
+		u8[A0 + 0x0a] |= 0x80
+	}
+}
+
+//# address-hook(0x0648ea)
+function void fn0648ea()
+{
+	if (useSonicTailsAndKnuckles && option.disable_hpz_miniboss != 0 && hpz_npc_cutscene_active)
+	{
+		hpz_npc_handoff_state = 1
+		hpz_npc_handoff_timer = 0
+		return
+	}
+	base.fn0648ea()
+}

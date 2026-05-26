@@ -1,0 +1,361 @@
+
+//-------------------------------------------------------//
+// CNZ: Carnival Night Zone                              //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// CNZ2: Jump on button for lights out + water raise
+//=============================================================
+
+//# address-hook(0x06229e)
+function void fn06229e()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn06229e()
+		return
+	}
+	UnloadObject()
+}
+
+// CNZ2 pre-boss transporter — toggle via the level-placed button.
+// The parent just saves chunk data; all toggle logic is in
+// fn065cac (effect) and fn065c50 (pressed state reset).
+global bool cnz2_transporter_active
+
+//# address-hook(0x0624de)
+function void fn0624de()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn0624de()
+		return
+	}
+
+	// First frame: save original chunks
+	if (objA0.base_state == 0x00)
+	{
+		objA0.base_state = 0x02
+		cnz2_transporter_active = false
+
+		A1 = 0xffff008e + u16[0xffff8048]
+		u16 stride = level.num_foreground_chunks_x
+		u8[0x818580] = u8[A1]
+		u8[0x818581] = u8[A1 + stride]
+		u8[0x818582] = u8[A1 + stride * 2]
+		u8[0x818583] = u8[A1 + stride * 3]
+	}
+
+	// Parent stays alive but invisible — button handles visuals
+	objA0.render_flags = render_flag.WORLD
+}
+
+// CNZ2 transporter effect — toggle instead of one-shot
+//# address-hook(0x065cac)
+function void fn065cac()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn065cac()
+		return
+	}
+
+	camera.screenshake.state = 0x14
+	playSound(0x57)
+
+	A1 = 0xffff008e + u16[0xffff8048]
+	u16 stride = level.num_foreground_chunks_x
+
+	if (!cnz2_transporter_active)
+	{
+		// Activate — modify chunks
+		u8[A1]              = 0x14
+		u8[A1 + stride]     = 0x0f
+		u8[A1 + stride * 2] = 0x0f
+		u8[A1 + stride * 3] = 0x88
+		cnz2_transporter_active = true
+
+		// Spawn transporter tube objects (make teleportation functional)
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x031f30
+			objA1.position.x.u16 = 0x4740
+			objA1.position.y.u16 = 0x0828
+			u8[A1 + 0x2c] = 0x4c
+			u16[0x818584] = A1 & 0xffff
+		}
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x031f30
+			objA1.position.x.u16 = 0x4740
+			objA1.position.y.u16 = 0x0a28
+			u8[A1 + 0x2c] = 0x20
+			u16[0x818586] = A1 & 0xffff
+		}
+	}
+	else
+	{
+		// Deactivate — restore chunks
+		u8[A1]              = u8[0x818580]
+		u8[A1 + stride]     = u8[0x818581]
+		u8[A1 + stride * 2] = u8[0x818582]
+		u8[A1 + stride * 3] = u8[0x818583]
+		cnz2_transporter_active = false
+
+		// Unload transporter tube objects
+		if (u16[0x818584] != 0)
+		{
+			u32[0xffff0000 + u16[0x818584]] = 0
+			u16[0x818584] = 0
+		}
+		if (u16[0x818586] != 0)
+		{
+			u32[0xffff0000 + u16[0x818586]] = 0
+			u16[0x818586] = 0
+		}
+	}
+
+#if STANDALONE
+	fillPlaneA_Default(0x4720, 0x09c0, 0x40, 0x30)
+#endif
+}
+
+
+//=============================================================
+// CNZ2: Water toggle switch — new standalone object
+//=============================================================
+// Spawned during level init at (0x0236, 0x06b8).
+// Jump on it to toggle water between 0x0A58 (on) and 0x1000 (off).
+
+global bool cnz2_water_switch_spawned
+global bool cnz2_water_off
+
+function void CNZ2.SpawnWaterSwitch()
+{
+	if (cnz2_water_switch_spawned)
+		return
+	cnz2_water_switch_spawned = true
+
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x350300
+		objA1.position.x.u16 = 0x0236
+		objA1.position.y.u16 = 0x06b8
+	}
+}
+
+//# address-hook(0x350300)
+function void CNZ2.WaterSwitch.Init()
+{
+	setupObjectAttributesFull(0x066402)
+	objA0.update_address = 0x350302
+	objA0.position.y.u16 += 4
+	addPatternLoadingCue(0x065bfc)
+	objA0.value39 = cnz2_water_off ? 1 : 0
+	if (cnz2_water_off)
+		water.height.target = WATER_OFF_HEIGHT
+}
+
+//# address-hook(0x350302)
+function void CNZ2.WaterSwitch.Update()
+{
+	// Force water target every frame to override base game's
+	// natural water rising mechanics after death/respawn.
+	if (cnz2_water_off)
+		water.height.target = WATER_OFF_HEIGHT
+
+	// Check if P1 lands on the switch
+	A1 = 0xffffb000
+	s16 dx = s16(objA1.position.x.u16) - s16(objA0.position.x.u16)
+	s16 dy = s16(objA1.position.y.u16) - s16(objA0.position.y.u16)
+
+	if (abs(dx) < BUTTON_DETECT_X && dy >= -BUTTON_DETECT_Y_ABOVE && dy < BUTTON_DETECT_Y_BELOW && objA1.velocity.y >= 0)
+	{
+		camera.screenshake.state = 0x08
+		playSound(0x57)
+
+		if (objA0.value39 == 0)
+		{
+			water.height.target = WATER_OFF_HEIGHT
+			objA0.value39 = 1
+			cnz2_water_off = true
+		}
+		else
+		{
+			water.height.target = 0x0a58
+			objA0.value39 = 0
+			cnz2_water_off = false
+		}
+
+		objA0.animation.sprite = 1
+		objA0.countdown_value = 15
+		objA0.update_address = 0x350304
+	}
+
+	DrawObject()
+}
+
+//# address-hook(0x350304)
+function void CNZ2.WaterSwitch.Cooldown()
+{
+	--objA0.countdown_value
+	if (objA0.countdown_value <= 0)
+	{
+		A1 = 0xffffb000
+		s16 dx = s16(objA1.position.x.u16) - s16(objA0.position.x.u16)
+		s16 dy = s16(objA1.position.y.u16) - s16(objA0.position.y.u16)
+		if (abs(dx) >= BUTTON_LEAVE_DISTANCE || abs(dy) >= BUTTON_LEAVE_DISTANCE)
+		{
+			objA0.animation.sprite = 0
+			objA0.update_address = 0x350302
+		}
+	}
+	DrawObject()
+}
+
+
+//=============================================================
+// CNZ Act 1 → Act 2 transition: spawn the water switch
+//=============================================================
+
+//# address-hook(0x051e60)
+function void fn051e60()
+{
+	bool wasCNZ1 = (global.zone_act == 0x0300)
+	base.fn051e60()
+	if (useSonicTailsAndKnuckles && wasCNZ1 && global.zone_act == 0x0301)
+	{
+		cnz2_water_switch_spawned = false
+		CNZ2.SpawnWaterSwitch()
+	}
+}
+
+
+//=============================================================
+// CNZ2: Barrel near Knuckles' breakable wall (X 0x17e0)
+//=============================================================
+// Base unloads this specific barrel for Knuckles P1.  In 3-char
+// mode it should be visible/usable regardless of character.
+
+//# address-hook(0x0320f2)
+function void CNZBarrel.Init()
+{
+	if (useSonicTailsAndKnuckles && objA0.position.x.u16 == 0x17e0)
+	{
+		// Skip the Knuckles unload check — fall through to normal init
+		D0.u8 = objA0.subtype2c
+		D1.u16 = (D0.u8 >> 3) & 0x0e
+		objA0.value3e = u16[0x0320e2 + D1.u16]
+		D0.u16 = (D0.u16 * 2) & 0x1e
+		u16[A0 + 0x3a] = D0.u16
+		objA0.mapping_offset = 0x2317b0
+		objA0.sprite_attributes = (sprite_attribute.PALETTE.LINE2 | 0x038e)
+		objA0.render_flags = render_flag.WORLD
+		objA0.sprite_priority = 0x0280
+		objA0.box_size.x = 0x20
+		objA0.box_size.y = 0x20
+		objA0.countdown_value = objA0.position.x.u16
+		u16[A0 + 0x30] = objA0.position.y.u16
+		u8[A0 + 0x44] = ((objA0.subtype2c & 0x0f) - 0x0a) & 0x03
+		D1.u16 = (objA0.subtype2c & 0xf0) * 4
+		if (objA0.flags2a & 0x01)
+			D1.s16 = -D1.s16
+		s16[A0 + 0x46] = D1.s16
+
+		objA0.update_address = addressof(CNZBarrel.Update)
+		CNZBarrel.Update()
+		return
+	}
+	base.CNZBarrel.Init()
+}
+
+
+//=============================================================
+// CNZ2: End-of-Knuckles-path capsule
+//=============================================================
+// Base only spawns the teleporter+capsule for Knuckles P1.
+// In 3-char mode, any character reaching that area should
+// trigger them so Sonic/Tails can finish the act there too.
+
+//# address-hook(0x05215a)
+function void fn05215a()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn05215a()
+		return
+	}
+
+#if STANDALONE
+	if (Game.isTimeAttack())
+	{
+		LoadTileContentDefault()
+		return
+	}
+#endif
+
+	A1 = 0xffffb000
+	if (objA1.position.x.u16 >= 0x4820 && objA1.position.y.u16 >= 0x0a00)
+	{
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x0522a0
+
+			if (allocDynamicObjectAfterA1())
+			{
+				objA1.update_address = 0x086540
+				objA1.position.x.u16 = 0x4980 - getScreenExtend()
+				objA1.position.y.u16 = 0x0a20
+
+				u32 backupD7 = D7
+				u32 backupA0 = A0
+				u32 backupA2 = A2
+				u32 backupA3 = A3
+
+				addPatternLoadingCue(0x083d74)
+
+				D7 = backupD7
+				A0 = backupA0
+				A2 = backupA2
+				A3 = backupA3
+			}
+		}
+
+		move_area.left = 0x4750
+		move_area.right = 0x48e0
+		level.results_done = 0
+		u16[0xffffeec0] += 4
+
+		fn0521d2()
+		return
+	}
+
+	LoadTileContentDefault()
+}
+
+
+
+//-------------------------------------------------------//
+// CNZ 2 Boss: Electric Floor Pull                       //
+//-------------------------------------------------------//
+// fn06ec3a pulls P1 and P2 toward the center green orb
+// when the electricity is active (flags38 & 0x04).
+// Type: PROXIMITY/KNOCKBACK - pulls players toward orb.
+
+//# address-hook(0x06ec3a)
+function void fn06ec3a()
+{
+	base.fn06ec3a()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+
+	if ((objA0.flags38 & 0x04) == 0)
+		return
+
+	// Apply same pull to P3
+	A1 = P3_ADDR
+	fn06ec50()
+}
+

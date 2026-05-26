@@ -1,0 +1,233 @@
+
+
+//-------------------------------------------------------//
+// Blue Sphere / Special Stage overrides                  //
+//-------------------------------------------------------//
+
+// Local aliases for bluespheres defines (not resolvable cross-module)
+define bs.movement_speed       = s16[0xffffe428]
+define bs.direction            =  u8[0xffffe426]
+define bs.current_gamespeed    = u16[0xffffe444]
+define bs.stage_exit_state     =  u8[0xffffe44c]
+define bs.palette_baseAddress  = u32[0xffffe446]
+
+// P3 jumping flags -- mod shared memory
+define bs.jumping_flags_p3     =  u8[0x818310]
+
+// P3 object slot -- slot 100 = 0xffffb000 + 100*0x4a
+constant u32 BS_P3_SLOT = 0xffffcce8
+
+// Dedicated VRAM for P3 Knuckles patterns.
+// Avoid: 0x0000 CheckerFloor, 0xabe0 TextPromps, 0xb120 HUDIcons,
+// 0xb360 Background, 0xb4e0 Rings/Emerald, 0xb700 Results common,
+// 0xc000-0xcfff Plane A, 0xd000 Sphere sprites, 0xdf00 Arrow,
+// 0xe000-0xefff Plane B, 0xf020 HUD digits, 0xf400 Shadows,
+// 0xf600 Tails_Tails, 0xfa80 Player, 0xfd60 Tails.
+// 0xa700 is between Results graphics (0xa460, loaded only at end)
+// and TextPromps (0xabe0) — free during gameplay.
+constant u16 BS_P3_VRAM = 0xa700
+
+
+//-------------------------------------------------------//
+// fn000c50 (VInt palette/DMA handler) override           //
+//-------------------------------------------------------//
+
+//# address-hook(0x000c50)
+function void fn000c50()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		if (bs.palette_baseAddress > 0x3fffff)
+		{
+			bs.palette_baseAddress = 0
+		}
+
+		// Force Knuckles palette into active palette line 3 RIGHT BEFORE
+		// the DMA in base.fn000c50 copies it to CRAM.  Writing earlier
+		// in the frame gets overwritten by the BS palette refresh.
+		// Only overwrite character colors (offset 0x10-0x1F) — the
+		// base colors (offset 0-0xF) are shared with bumpers and the
+		// Master Emerald, which would otherwise turn Knuckles-colored.
+		if (u32[BS_P3_SLOT] != 0)
+		{
+			copyMemory(0xfffffc70, 0x0089ee, 0x10)		// Knuckles character colors only
+		}
+	}
+	base.fn000c50()
+}
+
+
+//-------------------------------------------------------//
+// fn00903e (P1 Blue Sphere update) override              //
+//-------------------------------------------------------//
+// Manages P3 entirely from within P1's update by
+// swapping A0 to the P3 slot.  No address-hook needed
+// for P3 -- avoids the dispatch issue entirely.
+
+//# address-hook(0x00903e)
+function void fn00903e()
+{
+	base.fn00903e()
+
+	// From level select, SetGlobalCharacters was never called so
+	// useSonicTailsAndKnuckles is still false.  Detect it here.
+	if (!useSonicTailsAndKnuckles)
+	{
+		if (levelselect.characters == CHARS_SONIC_AND_TAILS && competition_mode.active == 0)
+			useSonicTailsAndKnuckles = true
+		else
+			return
+	}
+
+	if (u32[BS_P3_SLOT] == 0)
+	{
+		BlueSpheres.P3.InitSlot()
+	}
+
+	u32 savedA0 = A0
+	A0 = BS_P3_SLOT
+	BlueSpheres.P3.Tick()
+	A0 = savedA0
+}
+
+
+//-------------------------------------------------------//
+// P3 init -- write object slot memory                    //
+//-------------------------------------------------------//
+
+function void BlueSpheres.P3.InitSlot()
+{
+	u32 p3 = BS_P3_SLOT
+
+	for (u16 i = 0; i < 0x4a; i += 2)
+		u16[p3 + i] = 0
+
+	u8[p3 + 0x04] = render_flag.WORLD			// render_flags
+	u16[p3 + 0x08] = 0x0100					// sprite_priority (behind P2)
+	// Knuckles mapping + dedicated VRAM at BS_P3_VRAM + palette line 3
+	u16[p3 + 0x0a] = (0x8000 | 0x6000 | (BS_P3_VRAM >> 5))	// PRIORITY | LINE3 | VRAM
+	u32[p3 + 0x0c] = 0x0ad302									// Knuckles mapping_offset
+	u8[p3 + 0x06] = 0x10						// box_size.x
+	u8[p3 + 0x07] = 0x10						// box_size.y
+	u16[p3 + 0x30] = 0xa0						// horizontal centre
+	u16[p3 + 0x32] = 0x70						// vertical centre
+	u16[p3 + 0x34] = 0							// pitch
+	u16[p3 + 0x36] = 0xf800					// roll
+	u16[p3 + 0x38] = 0xffa0					// yaw (well behind P2's 0xffe0)
+	u8[p3 + 0x3a] = 0xff						// value3a
+
+	// Knuckles palette into ACTIVE palette line 3 (DMA source is 0xfffffc00)
+	// Line 3 = 0xfffffc60; character colors at offset 0x10 = 0xfffffc70
+	// Only overwrite character colors (offset 0x10-0x1F) — the base
+	// colors (offset 0-0xF) are shared with bumpers and the Master
+	// Emerald, which would otherwise turn Knuckles-colored.
+	copyMemory(0xfffffc70, 0x0089ee, 0x10)		// Knuckles character colors
+	// Same for backup palette (used by fade effects)
+	copyMemory(0xfffffcf0, 0x0089ee, 0x10)
+
+	bs.jumping_flags_p3 = 0
+
+	// Mark slot as occupied with a valid no-op function so the
+	// object loop doesn't assert and the allocator skips it
+	u32[p3] = 0x000606
+}
+
+
+//-------------------------------------------------------//
+// P3 per-frame update                                    //
+//-------------------------------------------------------//
+// Called with A0 = BS_P3_SLOT so all objA0.* accessors
+// read/write to the P3 slot.
+
+function void BlueSpheres.P3.Tick()
+{
+	// --- Animation timer ---
+	D0 = 0x0c
+	D1.u16 = u16(bs.movement_speed)
+	if (D1.u16 != 0)
+	{
+		D1.s16 >>= 5
+		u16[A0 + 0x24] += D1.u16
+		D0 = objA0.animation.timer
+		if (D0.s8 < 0)
+		{
+			D0.u8 += 0x0c
+		}
+		else if (D0.u8 >= 0x0c)
+		{
+			D0.u8 -= 0x0c
+		}
+	}
+	objA0.animation.timer = D0.u8
+
+	// --- Animation sprite (P1 tables) ---
+	A1 = 0x0091e8
+	if (bs.jumping_flags_p3 != 0)
+	{
+		A1 = 0x0091f6
+		D1.u16 = u16(bs.movement_speed)
+		if (D1.u16 == 0)
+		{
+			D0.u8 = u8[0xfffffe05]
+			D0.u16 &= 0x03
+		}
+	}
+	objA0.animation.sprite = u8[A1 + D0.s16]
+
+	// --- Bumper detection ---
+	fn009402()
+	if (u8[A0 + 0x44] == 0x05 && bs.stage_exit_state == 0 && s8(bs.jumping_flags_p3) >= 0)
+	{
+		if ((bs.direction & 0x3f) == 0)
+		{
+			u32[A0 + 0x40] = 0xffe80000
+			bs.jumping_flags_p3 = 0x81
+			playSound(SFX_SPRING)
+		}
+	}
+
+	// --- Follow P1 history (double delay) ---
+	A1 = 0xffffe500
+	D0.u16 = u16[0xffffee26]
+	D0.u8 -= 0x20
+	D2.u8 = u8[A1 + D0.u16 + 2]
+	D0.u8 -= 4
+	D1.u8 = u8[A1 + D0.u16 + 2]
+	D0 = (D2.u8 == 0x81 || D1.s8 >= 0) ? 0 : 0x70
+
+	D0.u16 &= 0x70
+	if (D0.u16 != 0 && bs.jumping_flags_p3 == 0)
+	{
+		u32[A0 + 0x40] = 0xfff00000
+		bs.jumping_flags_p3 = 0x80
+		playSound(SFX_JUMP)
+	}
+
+	// --- Jump arc ---
+	if (s8(bs.jumping_flags_p3) < 0)
+	{
+		D0 = u32[A0 + 0x3c] + u32[A0 + 0x40]
+		if (D0.s32 >= 0)
+		{
+			D0 = 0
+			u32[A0 + 0x40] = 0
+			bs.jumping_flags_p3 = 0
+		}
+		D1.s32 = s16(bs.current_gamespeed) << 4
+		u32[A0 + 0x40] += D1
+		u32[A0 + 0x3c] = D0
+		D0 = (D0 << 16) + (D0 >> 16)
+		D0.u16 -= 0x800
+		u16[A0 + 0x36] = D0.u16
+	}
+
+	// --- Perspective + draw ---
+	fn00953e()
+	DrawObject()
+
+	// --- Load Knuckles patterns to dedicated VRAM (no conflict with P1) ---
+	A2 = 0x0ad31a		// Knuckles frame table
+	D6 = 0x0abf22		// Knuckles pattern data
+	D4.u16 = BS_P3_VRAM
+	fn0091a2()
+}

@@ -1,0 +1,1299 @@
+//-------------------------------------------------------//
+// LBZ: Launch Base Zone                                 //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// LBZ1: Path boundary constants
+//=============================================================
+constant u16 LBZ1_UPPER_PATH_MAX_Y = 0x0600
+constant u16 LBZ1_LOWER_PATH_MIN_Y = 0x0700
+
+
+//=============================================================
+// LBZ1: Remove camera restriction — both paths accessible
+//=============================================================
+
+//# address-hook(0x05410c)
+function void fn05410c()
+{
+	if (useSonicTailsAndKnuckles)
+		return
+	base.fn05410c()
+}
+
+
+//=============================================================
+// LBZ1: Cutscene init — widen right boundary
+//=============================================================
+
+//# address-hook(0x08cb9e)
+function void fn08cb9e()
+{
+	base.fn08cb9e()
+	if (useSonicTailsAndKnuckles)
+	{
+		move_area.left = 0
+		move_area.right = 0x3ea0 + getScreenExtend()
+	}
+}
+
+
+//=============================================================
+// LBZ1: Post-collapse — remove leftward camera ratchet
+//=============================================================
+
+//# address-hook(0x08ccb4)
+function void fn08ccb4()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08ccb4()
+		return
+	}
+
+	CheckDistanceToPlayers()
+	if (D2.u16 >= 0x60)
+	{
+		fn0847e6()
+		UpdateMovementStraightSimple()
+	}
+	else
+	{
+		objA0.base_state = 0x0c
+		objA0.velocity.y = -0x400
+
+	#if STANDALONE
+		level.vertical_wrap = 0x00a0
+	#endif
+	}
+}
+
+
+//=============================================================
+// LBZ1: Building collapse trigger — upper path only
+//=============================================================
+
+//# address-hook(0x08cc5a)
+function void fn08cc5a()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08cc5a()
+		return
+	}
+
+	A1 = 0xffffb000
+	if (camera.position.x.u16 + (getScreenWidth() - 320) >= 0x3c00 && objA1.position.y.u16 >= 0x01c0 && objA1.position.y.u16 < 0x0400)
+	{
+		if ((u8[A1 + 0x2a] & char.flag.IN_AIR) == 0)
+		{
+			objA0.base_state = 0x08
+			u8[0xffffeec4] = 0xff
+
+		#if STANDALONE
+			level.vertical_wrap = 0x0148
+			Game.startSkippableCutscene()
+		#endif
+		}
+	}
+}
+
+
+//=============================================================
+// LBZ1: Eggman cutscene — upper path only
+//=============================================================
+
+//# address-hook(0x08cb56)
+function void fn08cb56()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08cb56()
+		return
+	}
+	if (u16[0xffffb000 + 0x14] >= LBZ1_UPPER_PATH_MAX_Y)
+	{
+		return
+	}
+	A1 = 0x08cb96
+	if (InitBoss(0x08cb66))
+		return
+	fn08cb66()
+}
+
+
+//=============================================================
+// LBZ1: Eggman state dispatcher — unload after lower bosses
+//=============================================================
+
+//# address-hook(0x08cb66)
+function void fn08cb66()
+{
+	if (useSonicTailsAndKnuckles && lbz1_lower_bosses_defeated)
+	{
+		UnloadObject()
+		return
+	}
+	base.fn08cb66()
+}
+
+
+//=============================================================
+// LBZ1: NPC Knuckles — unload entirely
+//=============================================================
+
+//# address-hook(0x062640)
+function void fn062640()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn062640()
+		return
+	}
+	UnloadObject()
+}
+
+
+//=============================================================
+// LBZ1: Box manager — gate on upper path
+//=============================================================
+
+//# address-hook(0x08cd6c)
+function void fn08cd6c()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08cd6c()
+		return
+	}
+
+	A1 = 0xffff0000 + u16[A0 + 0x46]
+	if (u8[A1 + 0x38] & 0x02)
+	{
+		if (u16[0xffffb000 + 0x14] < LBZ1_UPPER_PATH_MAX_Y)
+		{
+			objA0.update_address = addressof(Object.CountdownAndTrigger)
+			objA0.countdown_value = 0x1f
+			objA0.countdown_callback = 0x08cd98
+			objA0.position.y.u16 = 0x0160
+		}
+	}
+	MoveWithParent()
+}
+
+
+//=============================================================
+// LBZ1: Knuckles-breakable wall between buildings
+//=============================================================
+
+global bool lbz1_knuckles_wall_broken
+global bool lbz1_knuckles_wall_spawned
+
+function void LBZ1.SpawnKnucklesWall()
+{
+	if (lbz1_knuckles_wall_spawned || lbz1_knuckles_wall_broken)
+		return
+	if (global.zone_act != 0x0600)
+		return
+
+	s16 dx = s16(0x3bee) - s16(camera.position.x.u16 + getScreenWidth() / 2)
+	if (abs(dx) > 0x0200)
+		return
+
+	lbz1_knuckles_wall_spawned = true
+
+	if (allocDynamicObjectStd())
+	{
+		objA1.update_address = 0x350500
+		objA1.position.x.u16 = 0x3bee
+		objA1.position.y.u16 = 0x046a
+	}
+}
+
+//# address-hook(0x350500)
+function void LBZ1.KnucklesWall.Init()
+{
+	if (lbz1_knuckles_wall_broken)
+	{
+		lbz1_knuckles_wall_spawned = false
+		UnloadObject()
+		return
+	}
+	objA0.mapping_offset = 0x22005e
+	objA0.sprite_attributes = (sprite_attribute.PALETTE.LINE1 | sprite_attribute.PRIORITY | 0x02ea)
+	objA0.render_flags = render_flag.WORLD
+	objA0.sprite_priority = 0x0080
+	objA0.box_size.x = 0x10
+	objA0.box_size.y = 0x20
+	objA0.animation.sprite = 0
+	objA0.update_address = 0x350502
+}
+
+//# address-hook(0x350502)
+function void LBZ1.KnucklesWall.Update()
+{
+	u16[A0 + 0x30] = u16[0xffffb000 + 0x18]
+	objA0.value32 = u16[0xffffb04a + 0x18]
+	D1 = objA0.box_size.x + 11
+	D2 = objA0.box_size.y
+	D3.u16 = D2.u16 + 1
+	D4.u16 = objA0.position.x.u16
+	fn01dc56()
+
+	D6 = (D6 << 16) + (D6 >> 16)
+	D6.u16 &= 0x03
+
+	if (D6.u16 & 0x01)
+	{
+		A1 = 0xffffb000
+		if (u8[A1 + 0x38] == CHARACTER_KNUCKLES)
+		{
+			LBZ1.KnucklesWall.DoBreak()
+			return
+		}
+	}
+	if (D6.u16 & 0x02)
+	{
+		A1 = 0xffffb04a
+		if (u8[A1 + 0x38] == CHARACTER_KNUCKLES)
+		{
+			LBZ1.KnucklesWall.DoBreak()
+			return
+		}
+	}
+
+	// P3 inline push check
+	if (u32[P3_ADDR] != 0 && u8[P3_ADDR + 0x38] == CHARACTER_KNUCKLES)
+	{
+		s16 dx = s16(u16[P3_ADDR + 0x10]) - s16(objA0.position.x.u16)
+		s16 dy = s16(u16[P3_ADDR + 0x14]) - s16(objA0.position.y.u16)
+		if (abs(dx) < 0x18 && abs(dy) < objA0.box_size.y)
+		{
+			LBZ1.KnucklesWall.DoBreak()
+			return
+		}
+	}
+
+	D0.u16 = (objA0.position.x.u16 & 0xff80) - level.despawn_position.x
+	if (D0.u16 > 0x0280)
+	{
+		lbz1_knuckles_wall_spawned = false
+		UnloadObject()
+		return
+	}
+	DrawObject()
+}
+
+
+//=============================================================
+// LBZ1: Disable wall collision at the door position
+//=============================================================
+
+function bool LBZ1.IsInDoorZone()
+{
+	if (!lbz1_knuckles_wall_broken)
+		return false
+	if (global.zone_act != 0x0600)
+		return false
+
+	u16 px = objA0.position.x.u16
+	u16 py = objA0.position.y.u16
+	return (px >= 0x3b92 && px <= 0x3c40 && py >= 0x0420 && py <= 0x0490)
+}
+
+//# address-hook(0x23e458)
+function void fn23e458()
+{
+	if (useSonicTailsAndKnuckles && lbz1_knuckles_wall_broken)
+	{
+		u16 px = D0.u16
+		u16 py = D1.u16
+
+		A1 = 0x23e5b0
+		D3 = 3
+
+		while (D3.s16 >= 0)
+		{
+			A5 = A1
+			u16 minX = u16[(A5+=2)-2]
+			u16 maxX = u16[(A5+=2)-2]
+			u16 minY = u16[(A5+=2)-2]
+			u16 maxY = u16[(A5+=2)-2]
+
+			if (px >= minX && px <= maxX && py >= minY && py <= maxY)
+			{
+				D2.u16 += 4
+				level.display_routine = D2.u16
+				call 0x23e494 + (D2.u16 >> 1)
+				return
+			}
+
+			A1 += 8
+			D2.u16 += 4
+			--D3.s16
+		}
+		return
+	}
+	base.fn23e458()
+}
+
+//# address-hook(0x00f22a)
+function void CheckStaticCollisionVertical()
+{
+	if (useSonicTailsAndKnuckles && lbz1_knuckles_wall_broken && global.zone_act == 0x0600)
+	{
+		u16 sx = D3.u16
+		u16 sy = D2.u16
+		if (sx >= 0x3b92 && sx <= 0x3c40 && sy >= 0x0420 && sy <= 0x0490)
+		{
+			D1.s16 = 0x10
+			return
+		}
+	}
+	base.CheckStaticCollisionVertical()
+}
+
+//# address-hook(0x00f3a4)
+function void CheckStaticCollisionVerticalShort()
+{
+	if (useSonicTailsAndKnuckles && lbz1_knuckles_wall_broken && global.zone_act == 0x0600)
+	{
+		u16 sx = D3.u16
+		u16 sy = D2.u16
+		if (sx >= 0x3b92 && sx <= 0x3c40 && sy >= 0x0420 && sy <= 0x0490)
+		{
+			D1.s16 = 0x10
+			return
+		}
+	}
+	base.CheckStaticCollisionVerticalShort()
+}
+
+//# address-hook(0x00f47e)
+function void CheckStaticCollisionHorizontal()
+{
+	if (useSonicTailsAndKnuckles && lbz1_knuckles_wall_broken && global.zone_act == 0x0600)
+	{
+		u16 sy = D2.u16
+		if (sy >= 0x0420 && sy <= 0x0490)
+		{
+			u16 sx = D3.u16
+			if (D6.u16 & 0x400)
+				sx ^= 0x0f
+			if (sx >= 0x3b92 && sx <= 0x3c40)
+			{
+				D1.s16 = 0x10
+				return
+			}
+		}
+	}
+	base.CheckStaticCollisionHorizontal()
+}
+
+function void LBZ1.KnucklesWall.DoBreak()
+{
+	playSound(SFX_COLLAPSE)
+	lbz1_knuckles_wall_broken = true
+	lbz1_knuckles_wall_spawned = false
+	UnloadObject()
+}
+
+
+//=============================================================
+// LBZ1: Box-piece break — path-aware 0x55 flag
+//=============================================================
+
+//# address-hook(0x08ce72)
+function void fn08ce72()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08ce72()
+		return
+	}
+	A1 = 0xffff0000 + u16[A0 + 0x46]
+	if ((u8[A1 + 0x38] & 0x08) == 0)
+	{
+		MoveWithParent()
+		return
+	}
+	objA0.base_state = 0x04
+	if (u16[0xffffb000 + 0x14] < LBZ1_UPPER_PATH_MAX_Y)
+	{
+		u16[0xffffeec4] = 0x55
+	}
+}
+
+
+//=============================================================
+// LBZ1: Level tiles — path-aware 0x55 handling
+//=============================================================
+
+global bool lbz1_building_destroyed
+global bool lbz1_lower_bosses_defeated
+
+//# address-hook(0x053f22)
+function void UpdateLevelTiles.LBZ1()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		LBZ1.SpawnKnucklesWall()
+
+	#if STANDALONE
+		debugDrawRect(0x3b92, 0x0420, 0x3c40 - 0x3b92, 0x0490 - 0x0420)
+
+		{
+			u16 camX = camera.position.x.u16
+			u16 camY = camera.position.y.u16
+			u16 camRight = camX + getScreenWidth()
+			u16 camBottom = camY + getScreenHeight()
+			if (camRight >= 0x3b92 && camX <= 0x3c40 && camBottom >= 0x0420 && camY <= 0x0490)
+			{
+				u16 planeBase = 0xc000
+				u16 planeW = 64
+				u16 txStart = (0x3b92 >> 3) & (planeW - 1)
+				u16 txEnd   = (0x3c40 >> 3) & (planeW - 1)
+				u16 tyStart = (0x0420 >> 3) & 31
+				u16 tyEnd   = (0x048f >> 3) & 31
+
+				for (u16 ty = tyStart; ty <= tyEnd; ++ty)
+				{
+					for (u16 tx = txStart; tx <= txEnd; ++tx)
+					{
+						u16 addr = planeBase + ty * (planeW * 2) + tx * 2
+						setVRAM(addr, 0x0000)
+					}
+				}
+			}
+		}
+	#endif
+
+		if (u16[0xffffeec4] == 0x55)
+		{
+			camera.foreground.y.u16 += camera.screenshake.offset
+			u16[0xffffeec4] = 0
+
+			if (u16[0xffffb000 + 0x14] < LBZ1_UPPER_PATH_MAX_Y)
+			{
+				A1 = 0xffff007d + u16[A3 + 0x08]
+				u8[A1] = 0xda
+				lbz1_building_destroyed = true
+			}
+			else
+			{
+				lbz1_lower_bosses_defeated = true
+				A1 = 0xffff0078 + u16[A3 + 0x4c]
+				D0.u8 = u8[A1]
+				A1 = 0xffff0078 + u16[A3 + 0x50]
+				u8[(A1+=1)-1] = D0.u8
+				u8[(A1+=1)-1] = D0.u8
+				u8[(A1+=1)-1] = D0.u8
+
+			#if STANDALONE
+				if (u8[0xffffb000 + 0x20] == char.state.RUNNING || u8[0xffffb000 + 0x20] == char.state.STANDING)
+				{
+					u8[0xffffb000 + 0x20] = char.state.KNUX_FALLING
+					u8[0xffffb000 + 0x21] = char.state.KNUX_FALLING
+					u8[0xffffb000 + 0x22] = 0xcb
+					u8[0xffffb000 + 0x23] = 1
+					u8[0xffffb000 + 0x2a] |= char.flag.IN_AIR
+				}
+				if (u8[0xffffb04a + 0x20] == char.state.RUNNING || u8[0xffffb04a + 0x20] == char.state.STANDING)
+				{
+					u8[0xffffb04a + 0x20] = char.state.FALLING_PANIC
+					u8[0xffffb04a + 0x2a] |= char.flag.IN_AIR
+				}
+				if (u32[P3_ADDR] != 0 && (u8[P3_ADDR + 0x20] == char.state.RUNNING || u8[P3_ADDR + 0x20] == char.state.STANDING))
+				{
+					u8[P3_ADDR + 0x20] = char.state.FALLING_PANIC
+					u8[P3_ADDR + 0x2a] |= char.flag.IN_AIR
+				}
+			#endif
+			}
+
+			fn04ed62()
+			return
+		}
+	}
+	base.UpdateLevelTiles.LBZ1()
+}
+
+
+//=============================================================
+// LBZ1: Cup elevator — don't hide for Knuckles P1
+//=============================================================
+
+//# address-hook(0x02694e)
+function void CupElevator.Init()
+{
+	if (useSonicTailsAndKnuckles && (objA0.subtype2c & 0x40))
+	{
+		if (lbz1_building_destroyed)
+		{
+			UnloadObject()
+			return
+		}
+		objA0.subtype2c &= ~0x40
+	}
+	base.CupElevator.Init()
+}
+
+//# address-hook(0x027096)
+function void fn027096()
+{
+	if (useSonicTailsAndKnuckles && (objA0.subtype2c & 0x40))
+	{
+		if (lbz1_building_destroyed)
+		{
+			UnloadObject()
+			return
+		}
+		objA0.subtype2c &= ~0x40
+	}
+	base.fn027096()
+}
+
+
+//=============================================================
+// LBZ1: Boss post-defeat — path-aware
+//=============================================================
+
+//# address-hook(0x072562)
+function void fn072562()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn072562()
+		return
+	}
+
+	if (u16[0xffffb000 + 0x14] < LBZ1_UPPER_PATH_MAX_Y)
+	{
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x085b0a
+		}
+		objA0.position.x.u16 = u16[A0 + 0x3c]
+		SetupAsSignpostSpawner()
+	}
+	else
+	{
+		A1 = 0xffff0000 + u16[A0 + 0x46]
+		D0.u8 = objA0.subtype2c
+		u8[A1 + 0x38] |= (1 << D0.u8)
+		fn0852ae()
+	}
+}
+
+
+//=============================================================
+// LBZ1: Boss hit handler — path-aware score function
+//=============================================================
+
+//# address-hook(0x072840)
+function void fn072840()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn072840()
+		return
+	}
+
+	if (u8[A0 + 0x28] == 0)
+	{
+		if (boss.remaining_hits == 0)
+		{
+			objA0.update_address = 0x085694
+			objA0.countdown_callback = 0x072562
+
+			spawnChildObject(0x083d84, 0x00, 0, 0)
+
+			if (u16[0xffffb000 + 0x14] < LBZ1_UPPER_PATH_MAX_Y)
+			{
+				AddScoreForBossEnemy()
+			}
+			else
+			{
+				AddScoreForBossEnemy_NoHudDirty()
+			}
+			return
+		}
+
+		if (boss.remaining_hits == 0x03)
+		{
+			objA0.flags38 |= 0x01
+		}
+
+		if (objA0.state == 0)
+		{
+			objA0.value3a = objA0.base_state
+			objA0.base_state = 0x0a
+			objA0.state = 0x20
+			playSound(0x6e)
+		}
+
+		fn084f92()
+
+		--objA0.state
+		if (objA0.state == 0)
+		{
+			objA0.base_state = objA0.value3a
+			u16[0xfffffc22] = 0x0eee
+			u8[A0 + 0x28] = u8[A0 + 0x25]
+		}
+	}
+}
+
+
+//=============================================================
+// LBZ1: Checkpoint boss spawner — upper-path fallback
+//=============================================================
+
+//# address-hook(0x08cdb8)
+function void fn08cdb8()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08cdb8()
+		return
+	}
+	if (u8[0xfffffaab] != 0 || u16[0xffffb000 + 0x14] >= LBZ1_UPPER_PATH_MAX_Y)
+	{
+		objA0.update_address = addressof(CheckForUnloadObject)
+		return
+	}
+
+	objA0.update_address = 0x08cdf2
+	move_area.right = 0x3ea0
+	move_area.left = 0x3c00
+
+	spawnChildObjects(0x08ce34, 0, 0, 10)
+
+	fn08d116()
+	fn08d0ea()
+}
+
+
+//# address-hook(0x08cdf2)
+function void fn08cdf2()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08cdf2()
+		return
+	}
+
+	if (u16[0xffffb000 + 0x14] >= LBZ1_UPPER_PATH_MAX_Y)
+	{
+		D0.u16 = (objA0.position.x.u16 & 0xff80) - level.despawn_position.x
+		if (D0.u16 > 0x0280)
+		{
+			Enemy.UnloadDelayed()
+		}
+		return
+	}
+
+	A1 = 0xffffb000
+	CheckDistanceToObjectA1()
+	if (D2.u16 < 0x70)
+	{
+		objA0.update_address = addressof(Object.CountdownAndTrigger)
+		move_area.left = 0x3da0
+		objA0.countdown_value = 0x1f
+		objA0.countdown_callback = 0x08cd9c
+	}
+
+	D0.u16 = (objA0.position.x.u16 & 0xff80) - level.despawn_position.x
+	if (D0.u16 > 0x0280)
+	{
+		Enemy.UnloadDelayed()
+	}
+}
+
+
+//=============================================================
+// LBZ1: Lower-path boss — gate on lower path
+//=============================================================
+
+//# address-hook(0x08cf80)
+function void fn08cf80()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn08cf80()
+		return
+	}
+	if (u16[0xffffb000 + 0x14] < LBZ1_LOWER_PATH_MIN_Y)
+	{
+		return
+	}
+	base.fn08cf80()
+}
+
+
+//=============================================================
+// LBZ1→LBZ2: Adjust P3 position + remember path
+//=============================================================
+
+//# address-hook(0x05427c)
+function void fn05427c()
+{
+	bool wasLBZ1 = (global.zone_act == 0x0600)
+	u16 playerY = u16[0xffffb000 + 0x14]
+	if (useSonicTailsAndKnuckles && wasLBZ1)
+	{
+		lbz2_keep_building_interior = true
+	}
+	base.fn05427c()
+	if (useSonicTailsAndKnuckles && wasLBZ1 && global.zone_act == 0x0601)
+	{
+		if (u32[P3_ADDR] != 0)
+		{
+			u16[P3_ADDR + 0x10] -= 0x3a00
+		}
+		if (playerY >= LBZ1_LOWER_PATH_MIN_Y)
+		{
+			level.start_location = 2
+		}
+	}
+}
+
+
+//=============================================================
+// LBZ2: Restart on correct path
+//=============================================================
+
+//# address-hook(0x054348)
+function void InitLevelTiles.LBZ2()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		lbz2_keep_building_interior = true
+		lbz2_path_elevator_spawned = false
+
+		if (checkpoint.number == 0 && level.start_location == 2)
+		{
+			u16 offset = global.zone * 8 + global.act * 4
+			u16 startX = u16[0x1e3cd8 + offset]
+			u16 startY = u16[0x1e3cd8 + offset + 2]
+
+			u16[0xffffb000 + 0x10] = startX
+			u16[0xffffb000 + 0x14] = startY
+			u16[0xffffb04a + 0x10] = startX
+			u16[0xffffb04a + 0x14] = startY
+			if (u32[P3_ADDR] != 0)
+			{
+				u16[P3_ADDR + 0x10] = startX
+				u16[P3_ADDR + 0x14] = startY
+			}
+		}
+	}
+	base.InitLevelTiles.LBZ2()
+
+	if (useSonicTailsAndKnuckles && checkpoint.number == 0 && level.start_location == 2)
+	{
+		u16 offset = global.zone * 8 + global.act * 4
+		u16 startX = u16[0x1e3cd8 + offset]
+		u16 startY = u16[0x1e3cd8 + offset + 2]
+		camera.position.x.u16 = startX - getScreenWidth() / 2
+		camera.position.y.u16 = startY - getScreenHeight() / 2
+		camera.foreground.x.u16 = camera.position.x.u16
+		camera.foreground.y.u16 = camera.position.y.u16
+		Level.GetCameraPosition()
+		Level.InitialTilesFill()
+
+	#if STANDALONE
+		fillPlaneA_Default(camera.position.x.u16, camera.position.y.u16, getScreenWidth(), getScreenHeight())
+	#endif
+	}
+}
+
+
+//=============================================================
+// LBZ2: Remove NPC Knuckles from mid-boss cutscene
+//=============================================================
+
+//# address-hook(0x0628aa)
+function void fn0628aa()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		UnloadObject()
+		return
+	}
+	base.fn0628aa()
+}
+
+//# address-hook(0x08d344)
+function void fn08d344()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		objA0.update_address = 0x08d36a
+		u16[A0 + 0x3a] = objA0.position.y.u16
+		objA0.velocity.x = 0x0100
+		objA0.countdown_value = 0x015f
+		objA0.countdown_callback = 0x08d450
+		fn0685e2()
+		return
+	}
+	base.fn08d344()
+}
+
+
+//=============================================================
+// LBZ2: Keep building interior loaded
+//=============================================================
+
+//# address-hook(0x0543a2)
+function void fn0543a2()
+{
+	if (useSonicTailsAndKnuckles && lbz2_keep_building_interior)
+		return
+	base.fn0543a2()
+}
+
+
+//=============================================================
+// LBZ2: Water level — path-aware
+//=============================================================
+
+global bool lbz2_keep_building_interior
+global bool lbz2_path_elevator_spawned
+
+//# address-hook(0x006ee8)
+function void UpdateWaterSurfaceLevel.LBZ2()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.UpdateWaterSurfaceLevel.LBZ2()
+		return
+	}
+
+	bool useLowerPathWater = (camera.position.y.u16 >= 0x0540) || isMainCharacter(CHARACTER_KNUCKLES)
+	if (!useLowerPathWater)
+		return
+
+	if (global.level_flag02 == 0)
+	{
+	#if STANDALONE
+		if (checkpoint.number == 5 && camera.position.x.u16 < 0x3c00)
+		{
+			water.height.current = 0x065e
+			water.height.next = 0x065e
+			return
+		}
+	#endif
+		A1 = 0x006f12
+		fn006f2c()
+	}
+	else
+	{
+	#if STANDALONE
+		if (water.height.next > 0x065e)
+		{
+			if (camera.position.y.u16 >= water.height.next && camera.position.y.u16 < 0x08e0)
+			{
+				water.height.next = 0x065e
+			}
+			else if (camera.position.y.u16 + getScreenHeight() < water.height.next)
+			{
+				water.height.next = camera.position.y.u16 + getScreenHeight()
+			}
+		}
+	#else
+		if (camera.position.y.u16 >= water.height.next)
+		{
+			water.height.next = 0x0660
+		}
+	#endif
+	}
+}
+
+
+//=============================================================
+// LBZ2: Path elevator — connects upper and lower paths
+//=============================================================
+
+//# address-hook(0x054444)
+function void UpdateLevelScrolling.LBZ2()
+{
+	if (useSonicTailsAndKnuckles)
+	{
+		LBZ2.SpawnPathElevator()
+	}
+	base.UpdateLevelScrolling.LBZ2()
+	if (useSonicTailsAndKnuckles && lbz2_path_elevator_spawned)
+	{
+		LBZ2.ClearShaftChunks()
+	}
+}
+
+function void LBZ2.ClearShaftChunks()
+{
+	u16 shaftTop = 0x0200
+	u16 shaftBottom = 0x0A00
+
+	u16 camTop = camera.position.y.u16
+	u16 camBottom = camTop + getScreenHeight() + 0x100
+
+	if (camTop >= 0x100)
+	{
+		camTop -= 0x100
+	}
+	else
+	{
+		camTop = 0
+	}
+
+	if (camTop < shaftTop)
+	{
+		camTop = shaftTop
+	}
+	if (camBottom > shaftBottom)
+	{
+		camBottom = shaftBottom
+	}
+
+	camTop &= 0xff80
+
+	for (u16 worldY = camTop; worldY <= camBottom; worldY += 0x80)
+	{
+		u16 tableOffset = (worldY >> 5) & level.chunksize.bitmask
+		u16 fgRowAddr = u16[0xffff8008 + tableOffset]
+		u32 addr = (s16(fgRowAddr + 6) >= 0) ? u32(fgRowAddr + 6) : (0xffff0000 + u32(fgRowAddr + 6))
+		u8[addr] = 0xed
+	}
+}
+
+function void LBZ2.SpawnPathElevator()
+{
+	if (lbz2_path_elevator_spawned)
+		return
+
+	s16 dx = s16(0x0340) - s16(camera.position.x.u16 + getScreenWidth() / 2)
+	if (abs(dx) > 0x0300)
+		return
+
+	if (allocDynamicObjectStd())
+	{
+		lbz2_path_elevator_spawned = true
+		objA1.update_address = 0x350600
+		objA1.position.x.u16 = 0x0340
+		objA1.position.y.u16 = 0x0AE8
+	}
+}
+
+//# address-hook(0x350600)
+function void LBZ2.PathElevator.Init()
+{
+	objA0.mapping_offset = 0x22619a
+	objA0.sprite_attributes = (sprite_attribute.PALETTE.LINE2 | 0x040d)
+	objA0.render_flags = render_flag.WORLD
+	objA0.sprite_priority = 0x80
+	objA0.box_size.x = 0x20
+	objA0.box_size.y = 0x10
+
+	u16[A0 + 0x30] = objA0.position.x.u16
+	objA0.value32 = objA0.position.y.u16
+	u16[A0 + 0x38] = 0x08D8
+	u16[A0 + 0x3a] = 0
+	u16[A0 + 0x36] = 0
+
+	for (u8 i = 0; i < 5; ++i)
+	{
+		if (allocDynamicObjectStd())
+		{
+			objA1.update_address = 0x350604
+			objA1.mapping_offset = 0x22619a
+			objA1.sprite_attributes = (sprite_attribute.PALETTE.LINE2 | 0x040d)
+			objA1.render_flags = render_flag.WORLD
+			objA1.sprite_priority = 0x0180
+			objA1.box_size.x = 0x08
+			objA1.box_size.y = 0x60
+			objA1.animation.sprite = 4
+			objA1.position.x.u16 = objA0.position.x.u16
+			objA1.position.y.u16 = objA0.position.y.u16
+			objA1.subtype2c = i
+			u16[A1 + 0x46] = A0.u16
+		}
+	}
+
+	objA0.update_address = 0x350602
+}
+
+//# address-hook(0x350602)
+function void LBZ2.PathElevator.Update()
+{
+	u16 state = u16[A0 + 0x36]
+
+	if (state == 0)
+	{
+		u16 backup_px = objA0.position.x.u16
+		D4.u16 = backup_px
+		D1 = objA0.box_size.x
+		D3.u16 = 9
+		PlatformCheckClimbOn()
+
+		if (objA0.flags2a & object.flag.P1_ON_OBJECT)
+		{
+			A1 = 0xffffb000
+			objA1.velocity.x = 0
+			objA1.velocity.y = 0
+			objA1.groundspeed = 0
+			u8[A1 + 0x20] = 0
+			u8[A1 + 0x2e] = 3
+			u8[A0 + 0x3c] = 1
+		}
+		if (objA0.flags2a & object.flag.P2_ON_OBJECT)
+		{
+			A1 = 0xffffb04a
+			objA1.velocity.x = 0
+			objA1.velocity.y = 0
+			objA1.groundspeed = 0
+			u8[A1 + 0x20] = 0
+			u8[A1 + 0x2e] = 3
+			u8[A0 + 0x3d] = 1
+		}
+		if (u8[A0 + 0x3c] != 0 || u8[A0 + 0x3d] != 0)
+		{
+			u16[A0 + 0x36] = (u16[A0 + 0x3a] == 0) ? 2 : 4
+			playSound(0x72)
+		}
+	}
+	else if (state == 2)
+	{
+		u16 progress = u16[A0 + 0x3a]
+		u16 height = u16[A0 + 0x38]
+		u16 speed = 8
+		if (progress + speed >= height)
+		{
+			u16[A0 + 0x3a] = height
+			u16[A0 + 0x36] = 6
+		}
+		else
+		{
+			u16[A0 + 0x3a] = progress + speed
+		}
+		LBZ2.PathElevator.UpdateMotion()
+		LBZ2.PathElevator.CheckJumpOut(0xffffb000, 0x3c, control.player1)
+		LBZ2.PathElevator.CheckJumpOut(0xffffb04a, 0x3d, control.tails)
+	}
+	else if (state == 4)
+	{
+		u16 progress = u16[A0 + 0x3a]
+		u16 speed = 8
+		if (progress <= speed)
+		{
+			u16[A0 + 0x3a] = 0
+			u16[A0 + 0x36] = 6
+		}
+		else
+		{
+			u16[A0 + 0x3a] = progress - speed
+		}
+		LBZ2.PathElevator.UpdateMotion()
+		LBZ2.PathElevator.CheckJumpOut(0xffffb000, 0x3c, control.player1)
+		LBZ2.PathElevator.CheckJumpOut(0xffffb04a, 0x3d, control.tails)
+	}
+	else if (state == 6)
+	{
+		LBZ2.PathElevator.CheckJumpOut(0xffffb000, 0x3c, control.player1)
+		LBZ2.PathElevator.CheckJumpOut(0xffffb04a, 0x3d, control.tails)
+		if (u8[A0 + 0x3c] == 0 && u8[A0 + 0x3d] == 0)
+		{
+			u16[A0 + 0x36] = 0
+		}
+	}
+
+	LBZ2.PathElevator.CarryRider(0xffffb000, 0x3c)
+	LBZ2.PathElevator.CarryRider(0xffffb04a, 0x3d)
+
+	D0.u16 = (u16[A0 + 0x30] & 0xff80) - level.despawn_position.x
+	if (D0.u16 <= 0x0280)
+	{
+		DrawObject()
+	}
+	else
+	{
+		lbz2_path_elevator_spawned = false
+		UnloadObject()
+	}
+}
+
+function void LBZ2.PathElevator.UpdateMotion()
+{
+	u32 rot = u32(u16[A0 + 0x3a]) * 0x0155
+	objA0.value26 = u8(rot >> 8)
+
+	objA0.position.y.u16 = objA0.value32 - u16[A0 + 0x3a]
+
+	D0.u16 = objA0.value26
+	D1.s16 = lookupCos(D0.u16) >> 2
+	objA0.position.x.u16 = u16[A0 + 0x30] + D1.u16
+
+	u8 angle = objA0.value26
+	objA0.sprite_priority = (angle >= 0x40 && angle < 0xc0) ? 0x0200 : 0x80
+
+	if ((angle >= 0x7e && angle <= 0x82) || (angle >= 0xfe || angle <= 0x02))
+	{
+		playSound(0x72)
+	}
+}
+
+function void LBZ2.PathElevator.CheckJumpOut(u32 playerAddr, u8 slotOffset, u16 controlState)
+{
+	if (u8[A0 + slotOffset] == 0)
+		return
+
+	A1 = playerAddr
+	if (u8[A1 + 0x05] >= base_state.HURT)
+	{
+		u8[A0 + slotOffset] = 0
+		return
+	}
+
+	u8 pressed = (playerAddr == 0xffffb000) ? control.player1.pressed : control.tails.pressed
+	if (pressed & CONTROL_ABC)
+	{
+		u8[A0 + slotOffset] = 0
+		u8[A1 + 0x2e] = 0
+		objA1.flags2a &= ~(char.flag.ON_OBJECT | char.flag.PUSHING)
+		objA1.flags2a |= char.flag.IN_AIR
+		objA1.velocity.y = -0x480
+		objA1.hitbox_extends.x = char.hitbox.x.ROLLING
+		objA1.hitbox_extends.y = char.hitbox.y.ROLLING
+		objA1.state = char.state.ROLLING
+		objA1.flags2a |= char.flag.ROLLING
+	}
+}
+
+function void LBZ2.PathElevator.CarryRider(u32 playerAddr, u8 slotOffset)
+{
+	if (u8[A0 + slotOffset] == 0)
+		return
+
+	A1 = playerAddr
+	objA1.position.x.u16 = objA0.position.x.u16
+	objA1.position.y.u16 = objA0.position.y.u16 - 0x10
+}
+
+
+//# address-hook(0x350604)
+function void LBZ2.PathElevatorPole.Update()
+{
+	A1 = 0xffff0000 + u16[A0 + 0x46]
+	if (u32[A1] == 0)
+	{
+		UnloadObject()
+		return
+	}
+
+	u16 segH = 0x60
+	u16 shaftTop = 0x0210
+	u16 shaftBottom = 0x0AE8
+	u16 camY = camera.position.y.u16
+	u16 baseY = (camY / segH) * segH
+	s16 offset = s16(objA0.subtype2c) - 1
+	u16 targetY = baseY + u16(offset * s16(segH))
+
+	if (targetY >= shaftTop && targetY <= shaftBottom)
+	{
+		objA0.position.y.u16 = targetY
+		DrawObject()
+	}
+}
+
+
+
+//-------------------------------------------------------//
+// LBZ 1 Boss: Arm Tracking (proximity to player)        //
+//-------------------------------------------------------//
+// fn0724e2 moves the boss arms toward P1's position.
+// Only P1 is tracked (A1 = 0xffffb000).
+// Type: PROXIMITY - boss tracks closest player position.
+// Note: This is a single-target tracker. We override to
+// pick the closest of P1/P2/P3 instead of always P1.
+
+//# address-hook(0x0724e2)
+function void fn0724e2()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn0724e2()
+		return
+	}
+
+	// Find closest player among P1, P2, P3
+	A1 = 0xffffb000
+	u16 best_dist = abs(s16(objA0.position.x.u16 - objA1.position.x.u16))
+
+	// Check P2
+	u32 candidate = 0xffffb04a
+	if (u32[candidate] != 0 && u8[candidate + 0x05] < base_state.DIED)
+	{
+		u16 dist2 = abs(s16(objA0.position.x.u16 - u16[candidate + 0x10]))
+		if (dist2 < best_dist)
+		{
+			A1 = candidate
+			best_dist = dist2
+		}
+	}
+
+	// Check P3
+	candidate = P3_ADDR
+	if (u32[candidate] != 0 && u8[candidate + 0x05] < base_state.DIED)
+	{
+		u16 dist3 = abs(s16(objA0.position.x.u16 - u16[candidate + 0x10]))
+		if (dist3 < best_dist)
+		{
+			A1 = candidate
+		}
+	}
+
+	// Now run the base tracking logic with A1 set to closest player
+	D0 = 0
+	D1 = 0
+	D2.u16 = objA0.position.x.u16
+	if (isMainCharacter(CHARACTER_KNUCKLES))
+	{
+		D4 = 0x20
+		if (objA0.subtype2c != 0)
+		{
+			D4.s16 = -D4.s16
+		}
+		D2.u16 += D4.u16
+	}
+
+	D2.u16 -= objA1.position.x.u16
+	if (D2.s16 < 0)
+	{
+		D2.s16 = -D2.s16
+		D0.u16 += 2
+	}
+
+	D1 = 0
+	D4.u16 = objA1.position.y.u16 - 0x38
+	D3.u16 = objA0.position.y.u16 - D4.u16
+	if (D3.s16 < 0)
+	{
+		D3.s16 = -D3.s16
+		D1.u16 += 2
+	}
+
+	objA0.velocity.x = u16[0x072554 + D0.u16]
+	objA0.velocity.y = u16[0x072554 + D1.u16]
+	if (D2.u16 <= 4)
+	{
+		objA0.velocity.x = 0
+	}
+	if (D3.u16 <= 4)
+	{
+		objA0.velocity.y = 0
+	}
+
+	UpdateMovementStraightSimple()
+	Object.AnimationProgressByLocalA1()
+	fn072840()
+}

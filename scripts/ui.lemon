@@ -1,0 +1,259 @@
+
+//-------------------------------------------------------//
+// HUD: Character swap indicator                         //
+//-------------------------------------------------------//
+// Shows the current P1/P2/P3 character icons briefly
+// after a swap. Also shows P1 character icon persistently
+// when it's not Sonic (so you know who you're controlling).
+
+function void RenderHUD()
+{
+	base.RenderHUD()
+
+	if (!useSonicTailsAndKnuckles || !swap_chars_ready)
+		return
+
+	if (debug_mode.state != 0)
+		return
+
+	// Decrement HUD timer
+	if (swap_hud_timer > 0)
+		--swap_hud_timer
+
+	// Show swap indicator after a swap (for 90 frames = 1.5 sec)
+	if (swap_hud_timer > 0)
+	{
+		u16 renderQueue = 0xe080
+		u16 px = getScreenWidth() - 48
+		u16 py = 12
+
+		// Fade: full opacity for first 60 frames, then fade out
+		u8 alpha = 255
+		if (swap_hud_timer < 30)
+			alpha = u8(swap_hud_timer * 8)
+
+		u32 color = (u32(alpha) << 24) | 0xffffff
+
+		// Draw P1 icon (who you're controlling now)
+		u8 p1char = u8[0xffffb000 + 0x38]
+		string p1icon = getCharacterLivesIcon(p1char)
+		Renderer.drawCustomSprite(p1icon, px, py, 0, 0, renderQueue, 0, color)
+
+		// Draw arrow
+		Renderer.drawText("oxyfont_tiny", px + 18, py - 2, ">", color, 1, 0, renderQueue, false)
+
+		// Draw P2 icon
+		u8 p2char = u8[0xffffb04a + 0x38]
+		string p2icon = getCharacterLivesIcon(p2char)
+		Renderer.drawCustomSprite(p2icon, px + 28, py, 0, 0, renderQueue, 0, color)
+
+		// Draw P3 icon
+		u8 p3char = u8[P3_ADDR + 0x38]
+		string p3icon = getCharacterLivesIcon(p3char)
+		Renderer.drawCustomSprite(p3icon, px + 46, py, 0, 0, renderQueue, 0, color)
+	}
+
+	// Show persistent small indicator when P1 is not Sonic (after swap)
+	if (swap_hud_timer == 0 && swap_controlled_char != CHARACTER_SONIC)
+	{
+		u8 p1char = u8[0xffffb000 + 0x38]
+		string icon = getCharacterLivesIcon(p1char)
+		u16 renderQueue = 0xe080
+		Renderer.drawCustomSprite(icon, getScreenWidth() - 20, 12, 0, 0, renderQueue)
+	}
+}
+
+
+
+//-------------------------------------------------------//
+// Data Select: character cycling override               //
+//-------------------------------------------------------//
+
+//# address-hook(0x00d6d0)
+function void fn00d6d0()
+{
+	u8 character = D0.u8
+	if (u16[0xffffb04a + 0x30] == 0)
+	{
+		u8 maxCharacterSelection = 3
+		if (Game.isSecretUnlocked(SECRET_KNUX_AND_TAILS))
+		{
+			maxCharacterSelection = CHARS_SONIC_TAILS_AND_KNUCKLES		// 5
+		}
+
+		if (control.pad1.pressed & CONTROL_UP)
+		{
+			character = (character < maxCharacterSelection) ? (character + 1) : CHARS_SONIC_AND_TAILS
+			playSound(SFX_CLICK)
+		}
+		else if (control.pad1.pressed & CONTROL_DOWN)
+		{
+			character = (character > CHARS_SONIC_AND_TAILS) ? (character - 1) : maxCharacterSelection
+			playSound(SFX_CLICK)
+		}
+	}
+	D0 = character
+}
+
+
+//-------------------------------------------------------//
+// Data Select: No-Save slot sprite display override     //
+//-------------------------------------------------------//
+// Sprite indices 4-8 map to combos 0-4. Combo 5 has no sprite,
+// so we display it as combo 0 (Sonic & Tails) with index 4.
+
+//# address-hook(0x00d30c)
+function void fn00d30c()
+{
+	// Map our combo to a valid sprite index (reuse Sonic & Tails icon)
+	u8 spriteChar = dataselect.nosave_characters
+	if (spriteChar == CHARS_SONIC_TAILS_AND_KNUCKLES)
+		spriteChar = CHARS_SONIC_AND_TAILS
+
+	objA0.compound.sprite1.animation.sprite = 0x0f
+	objA0.animation.sprite = spriteChar + 4
+
+	if (dataselect.slot_selected == 0 && u16[0xffffb04a + 0x2e] == 0 && u16[0xffffeee4] == 0)
+	{
+		if (control.pad1.pressed & DataSelect.CONTROLS_ACCEPT)
+		{
+			levelselect.characters = dataselect.nosave_characters
+
+			DataSelect.sharedNewGameStartup()
+
+			global.active_saveslot = 0
+			DataSelect.SharedGameSlotContinue()
+
+			DrawObject()
+			return
+		}
+
+		D0.u16 = dataselect.nosave_characters
+		fn00d6d0()
+		dataselect.nosave_characters = D0.u16
+
+		// Map sprite for display
+		u8 displayChar = D0.u8
+		if (displayChar == CHARS_SONIC_TAILS_AND_KNUCKLES)
+			displayChar = CHARS_SONIC_AND_TAILS
+		objA0.animation.sprite = displayChar + 4
+
+		objA0.compound.count = 1
+		if (level.framecounter.low & 0x10)
+		{
+			fn00d69e()
+			return
+		}
+	}
+
+	objA0.compound.count = 0
+	fn00d69e()
+}
+
+
+//-------------------------------------------------------//
+// Level Select: character cycling override              //
+//-------------------------------------------------------//
+
+//# address-hook(0x007e64)
+function void fn007e64()
+{
+	bool skipPart = false
+	if ((control.pad1.pressed & (CONTROL_UP | CONTROL_DOWN)) == 0)
+	{
+		--u16[0xffffff80]
+		skipPart = (s16[0xffffff80] >= 0)
+	}
+
+	if (!skipPart)
+	{
+		u16[0xffffff80] = 11
+		if (control.pad1.state & CONTROL_UP)
+		{
+			--levelselect.selection
+			if (s16(levelselect.selection) < 0)
+				levelselect.selection = 0x20
+		}
+		if (control.pad1.state & CONTROL_DOWN)
+		{
+			++levelselect.selection
+			if (levelselect.selection > 0x20)
+				levelselect.selection = 0
+		}
+		return
+	}
+
+	if (levelselect.selection == 0x20)
+	{
+		// Sound test
+		if (control.pad1.pressed & CONTROL_LEFT)
+		{
+			if (levelselect.soundtest > 0)
+				--levelselect.soundtest
+		}
+		if (control.pad1.pressed & CONTROL_RIGHT)
+		{
+			levelselect.soundtest = (levelselect.soundtest + 1) & 0xff
+		}
+		if (control.pad1.pressed & CONTROL_A)
+		{
+			levelselect.soundtest = (levelselect.soundtest + 0x10) & 0xff
+		}
+
+		if (control.pad1.pressed & CONTROL_C)
+		{
+			playMusic(levelselect.soundtest)
+		}
+		if (control.pad1.pressed & CONTROL_B)
+		{
+			playMusic(0xe3)
+		}
+	}
+	else
+	{
+		if (control.pad1.pressed & (CONTROL_LEFT | CONTROL_RIGHT))
+		{
+			levelselect.selection = u8[0x007f22 + levelselect.selection]
+		}
+
+		if (control.pad1.pressed & CONTROL_C)
+		{
+			u8 maxCharacterSelection = 3
+			if (Game.isSecretUnlocked(SECRET_KNUX_AND_TAILS))
+			{
+				maxCharacterSelection = CHARS_SONIC_TAILS_AND_KNUCKLES		// 5
+			}
+
+			levelselect.characters = (levelselect.characters < maxCharacterSelection) ? (levelselect.characters + 1) : CHARS_SONIC_AND_TAILS
+		}
+	}
+}
+
+
+//-------------------------------------------------------//
+// Act Select menu overrides                             //
+//-------------------------------------------------------//
+
+function u8 ActSelect.GetNumCharacterCombinations()
+{
+	u8 count = base.ActSelect.GetNumCharacterCombinations()
+	if (Game.isSecretUnlocked(SECRET_KNUX_AND_TAILS))
+	{
+		++count
+	}
+	return count
+}
+
+function string ActSelect.GetCharacterCombinationName(u8 index)
+{
+	if (index == CHARS_SONIC_TAILS_AND_KNUCKLES)
+		return "Sonic & Tails"
+	return base.ActSelect.GetCharacterCombinationName(index)
+}
+
+function string ActSelect.GetCharacterCombinationSprite(u8 index)
+{
+	if (index == CHARS_SONIC_TAILS_AND_KNUCKLES)
+		return "menu_characters_sonic_tails"
+	return base.ActSelect.GetCharacterCombinationSprite(index)
+}

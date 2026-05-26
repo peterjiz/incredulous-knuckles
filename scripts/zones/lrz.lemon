@@ -1,0 +1,115 @@
+
+//-------------------------------------------------------//
+// LRZ: Lava Reef Zone                                   //
+//-------------------------------------------------------//
+
+
+//=============================================================
+// LRZ: Remove boulder cutscene — both paths open
+//=============================================================
+
+//# address-hook(0x063a6a)
+function void fn063a6a()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn063a6a()
+		return
+	}
+	UnloadObject()
+}
+
+//# address-hook(0x063b22)
+function void fn063b22()
+{
+	if (!useSonicTailsAndKnuckles)
+	{
+		base.fn063b22()
+		return
+	}
+	UnloadObject()
+}
+
+
+//=============================================================
+// LRZ2: Modify collapsing platforms at boulder area into
+//        boss-path drop zone
+//=============================================================
+
+global bool lrz2_boss_drop_spawned
+
+//# address-hook(0x020630)
+function void fn020630()
+{
+	base.fn020630()
+
+	if (!useSonicTailsAndKnuckles)
+		return
+	if (global.zone_act != 0x0901)
+		return
+
+	u16 px = objA0.position.x.u16
+	u16 py = objA0.position.y.u16
+	if (py < 0x0240 || py > 0x0260)
+		return
+
+	// Middle two blocks — remove (creates the gap)
+	if (px == 0x3760 || px == 0x37a0)
+	{
+		UnloadObject()
+		return
+	}
+
+	// Outer two blocks — recolor orange (palette line 3)
+	if (px == 0x3720 || px == 0x37e0)
+	{
+		objA0.sprite_attributes = (sprite_attribute.PALETTE.LINE3 | 0x0090)
+
+		// Spawn the boss-drop trigger once
+		if (!lrz2_boss_drop_spawned)
+		{
+			lrz2_boss_drop_spawned = true
+			if (allocDynamicObjectStd())
+			{
+				objA1.update_address = 0x350700
+				objA1.position.x.u16 = 0x3780
+				objA1.position.y.u16 = 0x02a0
+			}
+		}
+	}
+}
+
+// Boss drop trigger — detects player falling through the gap
+//# address-hook(0x350700)
+function void LRZ2.BossDropTrigger.Init()
+{
+	objA0.render_flags = render_flag.WORLD
+	objA0.box_size.x = 0x40
+	objA0.box_size.y = 0x20
+	objA0.update_address = 0x350702
+}
+
+//# address-hook(0x350702)
+function void LRZ2.BossDropTrigger.Update()
+{
+	u16 px = u16[0xffffb000 + 0x10]
+	u16 py = u16[0xffffb000 + 0x14]
+
+	if (px >= 0x3740 && px <= 0x37c0 && py >= 0x0350)
+	{
+		level.skip_titlecard = 0xff
+		level.backup.rings = ring_counter
+		level.backup.timer.alldata = timer.alldata
+		global.shields_backup_2 = u8[0xffffb000 + 0x2b]
+		TriggerNextZone(0x1600)
+		UnloadObject()
+		return
+	}
+
+	D0.u16 = (objA0.position.x.u16 & 0xff80) - level.despawn_position.x
+	if (D0.u16 > 0x0280)
+	{
+		lrz2_boss_drop_spawned = false
+		UnloadObject()
+	}
+}

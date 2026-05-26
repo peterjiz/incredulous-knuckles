@@ -1,0 +1,32 @@
+
+//# script-feature-level(2)
+
+// Incredulous Knuckles
+// Knuckles joins Sonic & Tails as a 3rd AI companion (P3_ADDR, slot 93, 0xFFFFCAE2)
+
+include defines
+include knuckles_ai
+include character_swap
+include formation
+
+include zones/shared
+include zones/water
+include zones/aiz
+include zones/hcz
+include zones/cnz
+include zones/icz
+include zones/mhz
+include zones/lrz
+include zones/hpz
+include zones/lbz
+include zones/ssz
+include zones/ddz
+include zones/mgz
+include zones/dez
+
+include maingame
+include character
+include objects
+include super
+include bluespheres
+include ui
