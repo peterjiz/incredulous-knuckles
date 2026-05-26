@@ -2,6 +2,8 @@
 
 A [Sonic 3 A.I.R.](https://sonic3air.org/) mod that adds Knuckles as a 3rd AI companion when playing as Sonic & Tails. Knuckles isn't buying Eggman's lies this time — he joins the team from the start.
 
+[![Incredulous Knuckles](https://img.youtube.com/vi/9p2diE-k-NQ/0.jpg)](https://www.youtube.com/watch?v=9p2diE-k-NQ)
+
 ## Features
 
 - **3-Character Gameplay** — Sonic, Tails, and Knuckles all on screen at once
