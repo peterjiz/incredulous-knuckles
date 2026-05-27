@@ -134,7 +134,10 @@ function void InitLevelScrolling.HPZ()
 
 function void HPZ.WarmStartCutscene()
 {
-	// Find which slot Knuckles occupies
+	// Find which slot Knuckles occupies.
+	// If Knuckles is P1, swap him out — the camera tracks P1, so we
+	// can't park P1 at (0,0). After the swap, teleport Sonic (now P1)
+	// to the cutscene area so he doesn't die below the camera jump.
 	hpz_knuckles_was_p1 = false
 	if (u8[0xffffb000 + 0x38] == CHARACTER_KNUCKLES)
 	{
@@ -146,6 +149,12 @@ function void HPZ.WarmStartCutscene()
 			hpz_knuckles_addr = sonicAddr
 			hpz_knuckles_was_p1 = true
 			swap_controlled_char = u8[0xffffb000 + 0x38]
+
+			// Sonic is now P1 — place him just past the cutscene
+			// trigger (0x14d0) so the camera controller at 0x064c70
+			// walks him to 0x15a8 and makes him look up naturally
+			u16[0xffffb000 + 0x10] = 0x14e0
+			u16[0xffffb000 + 0x14] = 0x03ac
 		}
 		else
 		{
@@ -332,7 +341,6 @@ function void HPZ.UpdateNpcHandoff()
 			u8[ka + 0x2a] |= char.flag.IN_AIR
 			u8[ka + 0x20] = char.state.ROLLING
 
-			// Swap back if needed
 			if (hpz_knuckles_was_p1)
 			{
 				CharacterSwap.SwapSlots(0xffffb000, ka)

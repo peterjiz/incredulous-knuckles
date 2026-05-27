@@ -441,7 +441,7 @@ function void UpdateLevelTiles.LBZ1()
 		LBZ1.SpawnKnucklesWall()
 
 	#if STANDALONE
-		debugDrawRect(0x3b92, 0x0420, 0x3c40 - 0x3b92, 0x0490 - 0x0420)
+		// debugDrawRect(0x3b92, 0x0420, 0x3c40 - 0x3b92, 0x0490 - 0x0420)
 
 		{
 			u16 camX = camera.position.x.u16
