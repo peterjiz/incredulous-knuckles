@@ -54,6 +54,11 @@ scripts/
   zones/                   Per-zone logic (path routing, bosses, cutscenes)
 ```
 
+## Easter Eggs
+
+- Reenter the LBZ1 boss building from Act2
+- Press the swap button on the MHZ2 switch used by Knuckles
+
 ## License
 
 [MIT](LICENSE)
